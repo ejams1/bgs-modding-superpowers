@@ -322,6 +322,28 @@ function Invoke-Mo2VfsLauncherBrokerTransport {
     }
 }
 
+function ConvertTo-Mo2VfsLauncherArgumentString {
+    # Join arguments into a single command-line string using Windows
+    # CommandLineToArgvW quoting rules. Needed on Windows PowerShell 5.1, where
+    # ProcessStartInfo.ArgumentList does not exist.
+    param([string[]]$Arguments)
+
+    $quoted = @()
+    foreach ($argument in $Arguments) {
+        $value = [string]$argument
+        if ($value.Length -gt 0 -and $value -notmatch '[ \t"]') {
+            $quoted += $value
+        }
+        else {
+            $escaped = $value -replace '(\*)"', '$1$1\"'
+            $escaped = $escaped -replace '(\+)$', '$1$1'
+            $quoted += ('"' + $escaped + '"')
+        }
+    }
+
+    return ($quoted -join ' ')
+}
+
 function Invoke-Mo2VfsLauncherDirectChildTransport {
     param(
         [string]$TargetPath,
@@ -340,18 +362,33 @@ function Invoke-Mo2VfsLauncherDirectChildTransport {
     $startInfo.RedirectStandardOutput = -not [string]::IsNullOrWhiteSpace($StdoutFile)
     $startInfo.RedirectStandardError = -not [string]::IsNullOrWhiteSpace($StderrFile)
 
+    $argumentValues = @()
+
     if ([System.IO.Path]::GetExtension($TargetPath).ToLowerInvariant() -eq '.ps1') {
         $startInfo.FileName = 'pwsh'
-        $null = $startInfo.ArgumentList.Add('-NoProfile')
-        $null = $startInfo.ArgumentList.Add('-File')
-        $null = $startInfo.ArgumentList.Add($TargetPath)
+        $argumentValues += '-NoProfile'
+        $argumentValues += '-File'
+        $argumentValues += $TargetPath
     }
     else {
         $startInfo.FileName = $TargetPath
     }
 
     foreach ($targetArgument in $TargetArguments) {
-        $null = $startInfo.ArgumentList.Add([string]$targetArgument)
+        $argumentValues += [string]$targetArgument
+    }
+
+    # ProcessStartInfo.ArgumentList exists on .NET Core (PowerShell 7) but NOT on
+    # .NET Framework (Windows PowerShell 5.1), where it is null. The MO2 VFS
+    # transport runs under 5.1 because pwsh.exe does not survive usvfs injection,
+    # so fall back to the quoted Arguments string there.
+    if ($null -ne $startInfo.ArgumentList) {
+        foreach ($argumentValue in $argumentValues) {
+            $null = $startInfo.ArgumentList.Add([string]$argumentValue)
+        }
+    }
+    else {
+        $startInfo.Arguments = ConvertTo-Mo2VfsLauncherArgumentString -Arguments $argumentValues
     }
 
     foreach ($name in $Environment.Keys) {
