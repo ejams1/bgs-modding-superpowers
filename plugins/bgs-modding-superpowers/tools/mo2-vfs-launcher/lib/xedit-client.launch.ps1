@@ -37,8 +37,28 @@ function Get-XeditClientMo2LaunchWrapperFilePath { param([pscustomobject]$Sessio
 function Get-XeditClientMo2VfsLauncherScriptPath { return Join-Path (Get-XeditClientWorktreeRoot) 'tools\mo2-vfs-launcher\mo2-vfs-launcher.ps1' }
 
 function Get-XeditClientPwshPath {
+    # Transport host for the MO2 VFS launch wrapper.
+    #
+    # PowerShell 7 (pwsh.exe) does NOT survive MO2's usvfs injection: MO2 spawns
+    # it and usvfs reports "inithooks ... successful", but the process dies
+    # before running the wrapper, so mo2-launch-state.json is never written and
+    # the client fails with "Timed out waiting for MO2 launch artifact".
+    # Windows PowerShell 5.1 survives injection and runs the wrapper normally.
+    # mo2-vfs-launcher.ps1 uses no PS7-only syntax, so 5.1 is safe here.
+    #
+    # Override with BGS_MO2_VFS_PSHOST if a specific host is required.
+    $override = [string]$env:BGS_MO2_VFS_PSHOST
+    if (-not [string]::IsNullOrWhiteSpace($override) -and (Test-Path $override -PathType Leaf)) {
+        return $override
+    }
+
+    $windowsPowerShell = Join-Path ([string]$env:WINDIR) 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    if (Test-Path $windowsPowerShell -PathType Leaf) {
+        return $windowsPowerShell
+    }
+
     $pwshCommand = Get-Command pwsh -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($null -eq $pwshCommand -or [string]::IsNullOrWhiteSpace([string]$pwshCommand.Source)) { throw 'Unable to resolve pwsh for MO2 VFS launcher transport' }
+    if ($null -eq $pwshCommand -or [string]::IsNullOrWhiteSpace([string]$pwshCommand.Source)) { throw 'Unable to resolve a PowerShell host for MO2 VFS launcher transport' }
     return [string]$pwshCommand.Source
 }
 
