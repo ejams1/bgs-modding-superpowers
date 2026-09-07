@@ -108,12 +108,16 @@ if ($zombieProcs.Count -gt 0) {
 # MO2 accepts -p <profile> to activate a profile on launch. Use Start-Process
 # with -WindowStyle Normal so the GUI is visible AND the launcher process is
 # fully detached (we do not block waiting for MO2 to exit).
-$arguments = @("-p", $Profile)
+# NOTE: Start-Process -ArgumentList joins array elements with spaces WITHOUT
+# quoting them, so @("-p", $Profile) truncates any profile name containing a
+# space (e.g. "Life in the Ruins" arrives as -p Life). Pass one pre-quoted
+# argument string instead.
+$argumentString = '-p "{0}"' -f $Profile
 
 Write-Host ""
 Write-Host "Launching MO2 (visible GUI)..."
-Write-Host "  Command: `"$mo2Exe`" $($arguments -join ' ')"
-$proc = Start-Process -FilePath $mo2Exe -ArgumentList $arguments -WindowStyle Normal -PassThru
+Write-Host "  Command: `"$mo2Exe`" $argumentString"
+$proc = Start-Process -FilePath $mo2Exe -ArgumentList $argumentString -WindowStyle Normal -PassThru
 Write-Host ("  Started PID: {0}" -f $proc.Id)
 
 # --- Wait for main window to appear ---------------------------------------
