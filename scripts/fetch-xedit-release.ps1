@@ -69,42 +69,73 @@ $tag = $release.tag_name
 $published = $release.published_at
 Write-Host "Found release: $tag (published $published)"
 
-# --- Pick the zip asset ---------------------------------------------------
+# --- Pick the release asset (zip preferred, bare .exe supported) -----------
 
 $asset = $release.assets | Where-Object { $_.name -like "*.zip" } | Select-Object -First 1
+$assetKind = "zip"
 if (-not $asset) {
-    throw "No .zip asset found in release $tag. Available assets: $(($release.assets | ForEach-Object { $_.name }) -join ', '). Manual download required from $($release.html_url)."
+    # Not every release ships a zip. v4.1.6-automation.9, for example, publishes
+    # a bare xEdit64.exe with no archive wrapper. Prefer the 64-bit build when
+    # more than one .exe asset is present.
+    $exeAssets = @($release.assets | Where-Object { $_.name -like "*.exe" })
+    $asset = @($exeAssets | Where-Object { $_.name -like "*64*" })[0]
+    if (-not $asset) { $asset = $exeAssets[0] }
+    if ($asset) { $assetKind = "exe" }
+}
+if (-not $asset) {
+    throw "No .zip or .exe asset found in release $tag. Available assets: $(($release.assets | ForEach-Object { $_.name }) -join ', '). Manual download required from $($release.html_url)."
 }
 
 $downloadUrl = $asset.browser_download_url
-$tempZip = Join-Path $env:TEMP "xedit-release-$tag.zip"
 $sizeMb = [Math]::Round($asset.size / 1MB, 1)
+$xeditExe = Join-Path $xeditTarget "xEdit.exe"
 
-Write-Host "Downloading $($asset.name) (~$sizeMb MB) -> $tempZip ..."
-Invoke-WebRequest -Uri $downloadUrl -OutFile $tempZip -UseBasicParsing
+if ($assetKind -eq "zip") {
+    $tempZip = Join-Path $env:TEMP "xedit-release-$tag.zip"
+    Write-Host "Downloading $($asset.name) (~$sizeMb MB) -> $tempZip ..."
+    Invoke-WebRequest -Uri $downloadUrl -OutFile $tempZip -UseBasicParsing
 
-# --- Extract ---------------------------------------------------------------
+    # --- Extract -----------------------------------------------------------
 
-Write-Host "Extracting into $xeditTarget ..."
-try {
-    Expand-Archive -Path $tempZip -DestinationPath $xeditTarget -Force
-} finally {
-    if (Test-Path $tempZip) { Remove-Item $tempZip -Force }
+    Write-Host "Extracting into $xeditTarget ..."
+    try {
+        Expand-Archive -Path $tempZip -DestinationPath $xeditTarget -Force
+    } finally {
+        if (Test-Path $tempZip) { Remove-Item $tempZip -Force }
+    }
+
+    if (-not (Test-Path $xeditExe -PathType Leaf)) {
+        # Some release zips wrap their contents in a subfolder. Find it.
+        $found = Get-ChildItem -Path $xeditTarget -Filter "xEdit.exe" -Recurse | Select-Object -First 1
+        if ($found) {
+            Write-Warning "xEdit.exe found at $($found.FullName), not at expected top-level $xeditExe."
+            Write-Warning "  If your MO2 tool registration expects the top-level location, move the extracted contents up one level."
+            $xeditExe = $found.FullName
+        } else {
+            throw "xEdit.exe not found anywhere under $xeditTarget after extraction. Manual intervention required."
+        }
+    }
+} else {
+    # --- Bare .exe asset ---------------------------------------------------
+    # Download straight to the path the xEdit MCP expects. The launcher always
+    # passes an explicit game-mode flag (-FO4 / -SSE / ...), so the generic
+    # xEdit.exe filename is correct and does not affect game detection.
+    $tempExe = Join-Path $env:TEMP "xedit-release-$tag.exe"
+    Write-Host "Downloading $($asset.name) (~$sizeMb MB) -> $xeditExe ..."
+    Invoke-WebRequest -Uri $downloadUrl -OutFile $tempExe -UseBasicParsing
+
+    $actualSize = (Get-Item $tempExe).Length
+    if ($asset.size -gt 0 -and $actualSize -ne $asset.size) {
+        Remove-Item $tempExe -Force
+        throw "Download size mismatch for $($asset.name): got $actualSize bytes, expected $($asset.size)."
+    }
+    Move-Item -Path $tempExe -Destination $xeditExe -Force
 }
 
 # --- Verify xEdit.exe -----------------------------------------------------
 
-$xeditExe = Join-Path $xeditTarget "xEdit.exe"
 if (-not (Test-Path $xeditExe -PathType Leaf)) {
-    # Some release zips wrap their contents in a subfolder. Find it.
-    $found = Get-ChildItem -Path $xeditTarget -Filter "xEdit.exe" -Recurse | Select-Object -First 1
-    if ($found) {
-        Write-Warning "xEdit.exe found at $($found.FullName), not at expected top-level $xeditExe."
-        Write-Warning "  If your MO2 tool registration expects the top-level location, move the extracted contents up one level."
-        $xeditExe = $found.FullName
-    } else {
-        throw "xEdit.exe not found anywhere under $xeditTarget after extraction. Manual intervention required."
-    }
+    throw "xEdit.exe not present at $xeditExe after deployment. Manual intervention required."
 }
 
 # --- Summary --------------------------------------------------------------
