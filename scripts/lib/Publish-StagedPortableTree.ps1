@@ -41,6 +41,10 @@ function Publish-StagedPortableTree {
     [Parameter(Mandatory)][string]$ContainmentRoot,
     [Parameter(Mandatory)][string]$GeneratedMarker,
     [Parameter(Mandatory)][string]$StagingMarker,
+    # Allow promotion over a final tree that carries no generated marker. Only
+    # for migrating a tree that predates marker tracking; the containment and
+    # rename-based safety below is unchanged.
+    [switch]$AdoptUnmarked,
     # Internal test seams. Production callers use the safe defaults below.
     [scriptblock]$MoveDirectory,
     [scriptblock]$RemoveOwnedTree
@@ -82,7 +86,10 @@ function Publish-StagedPortableTree {
 
   if ($finalExisted) {
     if (-not (Test-BgsGeneratedMarker -Target $finalFull -MarkerName $GeneratedMarker)) {
-      throw "Refusing to replace '$finalFull': existing output is missing $GeneratedMarker. The materializer only replaces trees it previously generated."
+      if (-not $AdoptUnmarked) {
+        throw "Refusing to replace '$finalFull': existing output is missing $GeneratedMarker. The materializer only replaces trees it previously generated. Pass -AdoptUnmarked to adopt a tree that predates marker tracking."
+      }
+      Write-Warning "Promoting over unmarked tree at '$finalFull' (-AdoptUnmarked)."
     }
     $null = Assert-SafeDeleteTarget -Target $finalFull -RepoRoot $repoFull -ContainmentRoot $containmentFull
   }

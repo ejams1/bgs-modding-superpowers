@@ -45,7 +45,14 @@ AGENTS.md
 # script writes at /plugins/marketplace.json (portable-distribution shape) is
 # NOT our canonical marketplace manifest and stays ignored.
 /plugins/marketplace.json
+
+# The .bgs-portable-build marker is how build-portable-plugin.ps1 proves it owns
+# a generated tree; -Force refuses to overwrite a tree that lacks one. Since
+# /plugins/<name>/ is tracked and regenerated on every release, its marker has to
+# be tracked too - otherwise a fresh clone can never regenerate that tree. Markers
+# anywhere else (notably under the ignored /dist/) stay ignored.
 **/.bgs-portable-build
+!/plugins/*/.bgs-portable-build
 
 # BGS KB pack build artifact; source records + manifest.json are committed.
 /knowledge/bgs-kb/packs/*/kb.sqlite
