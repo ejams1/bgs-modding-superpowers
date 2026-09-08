@@ -41,12 +41,50 @@ async function readCurrentPluginVersion(pluginRoot) {
         return "0.1.0";
     }
 }
-async function listPackDirectories(rootPath) {
-    const entries = await readdir(rootPath, { withFileTypes: true });
+async function listChildDirectories(rootPath) {
+    const entries = await readdir(rootPath, { withFileTypes: true }).catch(() => []);
     return entries
         .filter((entry) => entry.isDirectory())
         .map((entry) => join(rootPath, entry.name))
         .sort((a, b) => a.localeCompare(b));
+}
+/**
+ * Enumerate candidate pack directories under a discovery root.
+ *
+ * Two layouts are supported, because the repo uses both:
+ *
+ *   flat       <root>/<packDir>/manifest.json
+ *   versioned  <root>/<packId>/<version>/manifest.json
+ *
+ * The bundled root and $BGS_KB_USER_PACKS roots are flat. The cache root is
+ * versioned: bgs_kb_install_pack writes <cacheRoot>/packs/<packId>/<version>/
+ * and prune-cache walks that same packId/version shape to keep the current and
+ * previous versions. Discovery used to scan exactly one level, so every pack
+ * installed by bgs_kb_install_pack was invisible to the server that had just
+ * installed it — the pack directory it found held only version directories and
+ * no manifest.json.
+ *
+ * Rather than force one layout on the other, probe a directory for its own
+ * manifest first and only descend when it has none. Both shapes therefore work
+ * under any root. When several versions of one packId are cached, each becomes
+ * a candidate and the existing precedence rules (newest builtAt, then root
+ * class) pick the winner — which is exactly the intent of retaining the
+ * previous version as a rollback.
+ */
+async function listPackDirectories(rootPath) {
+    const packRoots = [];
+    for (const dir of await listChildDirectories(rootPath)) {
+        if (existsSync(join(dir, "manifest.json"))) {
+            packRoots.push(dir);
+            continue;
+        }
+        const versioned = (await listChildDirectories(dir)).filter((versionDir) => existsSync(join(versionDir, "manifest.json")));
+        // A directory with neither its own manifest nor any versioned child still
+        // gets reported, so scanCandidate emits the missing_manifest skip reason
+        // instead of the directory disappearing from the report entirely.
+        packRoots.push(...(versioned.length > 0 ? versioned : [dir]));
+    }
+    return packRoots;
 }
 async function readManifest(manifestPath) {
     return JSON.parse(await readFile(manifestPath, "utf8"));

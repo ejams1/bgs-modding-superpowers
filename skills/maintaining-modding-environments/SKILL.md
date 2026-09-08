@@ -172,7 +172,9 @@ is **no longer used**. If `bgs_kb_status` surfaces packs that are not visible to
 - export the legacy root via `$env:BGS_KB_USER_PACKS` so the MCP keeps reading
   it as an additional read-only root while the user finishes migrating.
 
-Each version directory contains `manifest.json`, `records/`, and `kb.sqlite`. Current policy: retain the current version and the immediately previous version as rollback/fallback. Prune versions older than that only after confirming the pack is not pinned by the user or referenced by a current modpack workflow.
+Each version directory contains `manifest.json`, `records/`, and `kb.sqlite`. Discovery accepts either this versioned shape or a flat `<root>/<packDir>/manifest.json` — it probes a directory for its own manifest first and descends into version directories only when there is none. Prefer the versioned shape under the cache root, because `prune-cache` walks `packId/version` and cannot reason about a flat pack. The bundled root and `$BGS_KB_USER_PACKS` roots are flat.
+
+Current policy: retain the current version and the immediately previous version as rollback/fallback. Prune versions older than that only after confirming the pack is not pinned by the user or referenced by a current modpack workflow.
 
 Use the KB MCP CLI for routine pruning:
 

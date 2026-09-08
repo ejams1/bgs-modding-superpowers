@@ -239,3 +239,66 @@ test("skips packs missing kb.sqlite", async () => {
   expect(result.packs).toEqual([]);
   expect(result.skipped).toEqual([{ code: "missing_kb_sqlite", path: join(bundledRoot, "no-sqlite"), packId: "no-sqlite" }]);
 });
+
+test("discovers a versioned cache pack written by install-pack", async () => {
+  // bgs_kb_install_pack targets <cacheRoot>/<packId>/<version>/, and prune-cache
+  // walks the same shape. Discovery previously scanned only one level, so a pack
+  // installed by the server was invisible to that same server.
+  const bundledRoot = await tempRoot("kb-discovery-versioned-bundled-");
+  const cacheRoot = await tempRoot("kb-discovery-versioned-cache-");
+  const packRoot = await writePack(cacheRoot, join("bgs-kb-fallout4", "2026.06.23"), { packId: "bgs-kb-fallout4" });
+
+  const result = await discoverPacks({ bundledRoot, cacheRoot, userPackRoots: [], now });
+
+  expect(result.packs).toHaveLength(1);
+  expect(result.packs[0]).toMatchObject({ packId: "bgs-kb-fallout4", root: "cache", rootPath: cacheRoot, packRoot });
+  expect(result.skipped).toEqual([]);
+});
+
+test("prefers the newest cached version when several are retained", async () => {
+  // prune-cache keeps the current and previous version, so both are on disk.
+  // Each is a candidate for the same packId; precedence resolves by builtAt.
+  const bundledRoot = await tempRoot("kb-discovery-two-versions-bundled-");
+  const cacheRoot = await tempRoot("kb-discovery-two-versions-cache-");
+  await writePack(cacheRoot, join("bgs-kb-fallout4", "2026.06.23"), {
+    packId: "bgs-kb-fallout4",
+    manifest: { version: "2026.06.23", builtAt: "2026-06-23T00:00:00.000Z" },
+  });
+  const newer = await writePack(cacheRoot, join("bgs-kb-fallout4", "2026.08.11"), {
+    packId: "bgs-kb-fallout4",
+    manifest: { version: "2026.08.11", builtAt: "2026-08-11T00:00:00.000Z" },
+  });
+
+  const result = await discoverPacks({ bundledRoot, cacheRoot, userPackRoots: [], now });
+
+  expect(result.packs).toHaveLength(1);
+  expect(result.packs[0]).toMatchObject({ packId: "bgs-kb-fallout4", packRoot: newer, version: "2026.08.11" });
+  expect(result.collisions).toHaveLength(1);
+  expect(result.collisions[0]).toMatchObject({ code: "pack_id_overridden", packId: "bgs-kb-fallout4" });
+});
+
+test("still discovers flat packs under the cache root", async () => {
+  // Hand-deployed caches and older installs use the flat shape; both must work.
+  const bundledRoot = await tempRoot("kb-discovery-flat-cache-bundled-");
+  const cacheRoot = await tempRoot("kb-discovery-flat-cache-");
+  const packRoot = await writePack(cacheRoot, "bgs-kb-fallout4");
+
+  const result = await discoverPacks({ bundledRoot, cacheRoot, userPackRoots: [], now });
+
+  expect(result.packs).toHaveLength(1);
+  expect(result.packs[0]).toMatchObject({ packId: "bgs-kb-fallout4", root: "cache", packRoot });
+});
+
+test("reports missing_manifest for a directory with no manifest at either depth", async () => {
+  // A pack dir holding only junk must still surface a skip reason rather than
+  // silently vanishing from the discovery report.
+  const bundledRoot = await tempRoot("kb-discovery-empty-dir-");
+  await mkdir(join(bundledRoot, "not-a-pack", "not-a-version"), { recursive: true });
+
+  const result = await discoverPacks({ bundledRoot, cacheRoot: join(bundledRoot, "cache"), userPackRoots: [], now });
+
+  expect(result.packs).toEqual([]);
+  expect(result.skipped).toEqual([
+    { code: "missing_manifest", path: join(bundledRoot, "not-a-pack"), hint: "Candidate pack directory is missing manifest.json." },
+  ]);
+});
