@@ -247,6 +247,46 @@ ask the user to reopen the shell/session, then retry. Once it passes, route
 actual translation work to `using-bgs-translator`; this setup skill only
 installs and smoke-checks the CLI.
 
+### Step 3B - Bootstrap the Python venv (REQUIRED for the MO2 sidecar)
+
+The mo2-mcp server spawns a Python sidecar (`mo2_mcp_sidecar`) for FOMOD
+parsing, archive handling, and VFS asset-conflict analysis. Provision it into a
+plugin-owned virtual environment rather than the user's system Python:
+
+```powershell
+# Creates ~/.bgs-modding-superpowers/venv and installs the sidecar into it.
+pwsh <plugin-root>/scripts/bootstrap-python-venv.ps1
+```
+
+Add `-Editable` when working from a dev checkout so source edits take effect
+without reinstalling, and `-Force` to recreate an existing venv.
+
+The script auto-detects a suitable interpreter, **preferring Python 3.12**. Do
+not "improve" this to newest-first: pyfomod pins `lxml<5`, which publishes no
+cp313 wheels, so Python 3.13 makes pip build lxml from source and fail without
+libxml2 headers. The script also installs `setuptools` explicitly, because
+Python 3.12 removed `distutils` from the stdlib while pyfomod still imports it
+at module load — without the setuptools shim the sidecar installs cleanly and
+then fails on first import.
+
+No configuration follows a successful run. `resolveSidecarPython()` in
+tools/mo2-mcp/src/sidecar-client.ts probes `$BGS_PYTHON`, then this venv, then
+bare `python`, so the default location is discovered automatically. Set
+`$env:BGS_PYTHON` only when the venv lives somewhere else.
+
+Verify:
+
+```powershell
+# Expect: mo2_mcp_sidecar OK
+& "$env:USERPROFILE\.bgs-modding-superpowers\venv\Scripts\python.exe" -c "import mo2_mcp_sidecar, pyfomod, py7zr; print('mo2_mcp_sidecar OK')"
+```
+
+Skipping this step is not fatal to binding, but it silently degrades 11 tools —
+`mo2_install`, `mo2_reinstall_mod`, `mo2_remove_mod`, `mo2_rename_mod`,
+`mo2_send_mod_to`, `mo2_toggle_mod`, `mo2_switch_profile`, and the three
+`mo2_assets_*` conflict tools. The symptom is `sidecarReady: false` in
+`mo2_session` / `mo2_status`. Confirm it reads `true` at Step 10.
+
 ### Step 4 - Install the MO2 control plane (Python + broker)
 
 Once `MO2_Root` is known (path a or b), deploy the Python plugin:
@@ -421,6 +461,10 @@ success otherwise:
   least one `bgs_kb_query` smoke for the chosen game returns a hit.
 - If AI translation workflows were requested: `xtl version` succeeds from the
   user's shell, and `xtl --help` lists the translator command surface.
+- The Python venv is provisioned: `mo2_session` / `mo2_status` report
+  `sidecarReady: true`. If it is `false`, re-run
+  `scripts/bootstrap-python-venv.ps1` and rebind — do not declare success with
+  the 11 sidecar-backed tools silently degraded.
 - `<MO2_Root>/plugins/mo2_agent_control.py` exists (skipped only in no-MO2 mode).
 - MO2 is visibly running (process has `MainWindowHandle != 0`) and
   `<MO2_Root>/plugins/Mo2AgentControl/bootstrap/runtime/status.json` reports
@@ -456,6 +500,12 @@ steps need to pass.
 - **Starting MO2 with `Start-Process -WindowStyle Hidden`** (or any other
   invisible/background mode). Always use the `start-mo2.ps1` helper, which
   forces a visible window.
+- **`pip install`-ing the sidecar into the system Python** instead of running
+  `scripts/bootstrap-python-venv.ps1`. It works by accident on the author's
+  machine and pollutes the user's global interpreter.
+- **Treating `sidecarReady: false` as cosmetic.** Binding still succeeds and
+  the pipe-backed tools still answer, so it is easy to miss — but every asset
+  conflict and mod-mutation tool is silently unavailable until it is fixed.
 - Writing into the user's vanilla game install directly instead of via MO2
   overlay. NEVER do this. See `using-bgs-modding-superpowers` rule 1.
 - Declaring success on a green script return without the semantic readback

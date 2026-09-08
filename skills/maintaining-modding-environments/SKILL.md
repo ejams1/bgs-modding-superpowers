@@ -1,6 +1,6 @@
 ---
 name: maintaining-modding-environments
-description: "Use after first-run for ongoing modpack maintenance: update/install KB packs, author or register custom/mod KB packs, maintain localization glossary KBs for translator use, prune KB cache, health-check the environment, version-pin KB/tooling, or handle recurring BGS modding environment care."
+description: "Use after first-run for ongoing modpack maintenance: update/install KB packs, author or register custom/mod KB packs, maintain localization glossary KBs for translator use, prune KB cache, repair the Python venv behind the mo2-mcp sidecar (sidecarReady false), health-check the environment, version-pin KB/tooling, or handle recurring BGS modding environment care."
 ---
 
 # Maintaining Modding Environments
@@ -15,12 +15,66 @@ description: "Use after first-run for ongoing modpack maintenance: update/instal
 - The user asks to check or apply knowledge-base updates after first-run.
 - The user asks to prune the KB cache or clean old pack versions.
 - The user asks whether to pin a KB pack version, follow latest, or handle a `minPluginVersion` warning.
+- `mo2_session` / `mo2_status` report `sidecarReady: false`, or the user asks to install, repair, or recreate the Python venv behind the mo2-mcp sidecar.
 
 ## What this skill replaces
 
 Use `setting-up-bgs-modding-environment` for first-run: MO2 detection, control-plane install, visible MO2 launch, first xEdit acquisition, first KB pack acquisition, and first semantic smoke.
 
-This skill owns ongoing care after that first-run boundary: KB updates, cache hygiene, custom-pack authoring and registration, translator CLI maintenance, recurring environment health checks, and version-pinning advice.
+This skill owns ongoing care after that first-run boundary: KB updates, cache hygiene, custom-pack authoring and registration, Python venv and translator CLI maintenance, recurring environment health checks, and version-pinning advice.
+
+## Python venv maintenance (mo2-mcp sidecar)
+
+The mo2-mcp server spawns `python -m mo2_mcp_sidecar` for FOMOD parsing,
+archive handling, and VFS asset-conflict analysis. That interpreter lives in a
+plugin-owned venv at `~/.bgs-modding-superpowers/venv` — the same root as the KB
+cache — provisioned by `scripts/bootstrap-python-venv.ps1`.
+
+Readback first. `sidecarReady` in `mo2_session` / `mo2_status` is the health
+signal:
+
+```powershell
+# Does the bootstrapped interpreter exist and can it import the sidecar?
+& "$env:USERPROFILE\.bgs-modding-superpowers\venv\Scripts\python.exe" -c "import mo2_mcp_sidecar, pyfomod, py7zr; print('mo2_mcp_sidecar OK')"
+```
+
+Repair or refresh:
+
+```powershell
+# Reinstall the sidecar into the existing venv (idempotent).
+pwsh scripts/bootstrap-python-venv.ps1
+
+# Recreate the venv from scratch — use after a Python upgrade or a broken venv.
+pwsh scripts/bootstrap-python-venv.ps1 -Force
+
+# Dev checkout: editable install so source edits take effect without reinstalling.
+pwsh scripts/bootstrap-python-venv.ps1 -Editable
+```
+
+Two dependency constraints govern the interpreter choice, and both look like
+arbitrary version pinning until they bite:
+
+- **Prefer Python 3.12; do not "upgrade" to 3.13.** pyfomod pins `lxml<5`, and
+  lxml 4.x ships no cp313 wheels, so 3.13 forces a source build that fails
+  without libxml2 headers and a C toolchain.
+- **`setuptools` is a hard requirement, not a nicety.** Python 3.12 removed
+  `distutils` from the stdlib while pyfomod still does
+  `from distutils.version import LooseVersion` at import time. Modern setuptools
+  provides the shim. `python -m venv` does not install setuptools on 3.12+, so
+  the bootstrap script installs it explicitly. Symptom if it is missing:
+  the sidecar installs cleanly, then dies with `ModuleNotFoundError: No module
+  named 'distutils'` on first import.
+
+`sidecarReady: false` degrades 11 tools — `mo2_install`, `mo2_reinstall_mod`,
+`mo2_remove_mod`, `mo2_rename_mod`, `mo2_send_mod_to`, `mo2_toggle_mod`,
+`mo2_switch_profile`, and the three `mo2_assets_*` conflict tools. Binding still
+succeeds and pipe-backed tools still answer, so this fails quietly; check it
+explicitly during a health pass rather than assuming a successful bind means a
+healthy environment.
+
+For a venv somewhere other than the default, set `$env:BGS_PYTHON` to its
+interpreter — `resolveSidecarPython()` probes `$BGS_PYTHON`, then the default
+venv, then bare `python`.
 
 ## Translator CLI maintenance
 

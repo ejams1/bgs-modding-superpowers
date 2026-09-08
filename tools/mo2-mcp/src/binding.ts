@@ -3,7 +3,7 @@ import { loadConfig, type Config } from "./config.js";
 import { readMoIni, resolveGameKey, type MoIni } from "./mo-ini.js";
 import { detectMo2Running, type DetectionResult } from "./detection.js";
 import { PipeClient } from "./pipe-client.js";
-import { SidecarClient, type SidecarGame } from "./sidecar-client.js";
+import { SidecarClient, resolveSidecarPython, type SidecarGame } from "./sidecar-client.js";
 
 export type BindingState = "unbound" | "binding" | "bound" | "failed";
 
@@ -241,7 +241,16 @@ export class BindingManager {
       });
       return sidecar;
     } catch (error) {
-      this.log(`[mo2-mcp] sidecar failed to start: ${errorMessage(error)}\n`);
+      // A failure here is non-fatal — binding still succeeds and the pipe-backed
+      // tools keep working — but it silently degrades 11 mo2_* tools, so name the
+      // interpreter we tried and the fix rather than just the raw error.
+      this.log(
+        `[mo2-mcp] sidecar failed to start: ${errorMessage(error)}\n` +
+          `[mo2-mcp]   interpreter: ${resolveSidecarPython()}\n` +
+          `[mo2-mcp]   fix: pwsh scripts/bootstrap-python-venv.ps1 (or set $BGS_PYTHON)\n` +
+          `[mo2-mcp]   degraded: mo2_install, mo2_reinstall_mod, mo2_remove_mod, mo2_rename_mod,\n` +
+          `[mo2-mcp]             mo2_send_mod_to, mo2_toggle_mod, mo2_switch_profile, mo2_assets_*\n`,
+      );
       await sidecar.stop().catch(() => undefined);
       return undefined;
     }

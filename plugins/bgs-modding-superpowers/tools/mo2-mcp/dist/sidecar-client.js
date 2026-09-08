@@ -9,6 +9,54 @@
  * PLAN-PATCH P-B7: passes --game (FALLOUT4/SKYRIM_SE/...).
  */
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+/**
+ * Default virtual environment provisioned by scripts/bootstrap-python-venv.ps1.
+ *
+ * Kept under the same ~/.bgs-modding-superpowers root as the KB cache so the
+ * interpreter survives plugin reinstalls and works when the plugin tree itself
+ * is materialized read-only into a marketplace cache. If this path changes,
+ * change it in the bootstrap script too — that script and this function are the
+ * two halves of the same contract.
+ */
+export function defaultVenvPython(home = homedir()) {
+    const venvRoot = join(home, ".bgs-modding-superpowers", "venv");
+    return process.platform === "win32"
+        ? join(venvRoot, "Scripts", "python.exe")
+        : join(venvRoot, "bin", "python");
+}
+/**
+ * Resolve the interpreter used to spawn the sidecar.
+ *
+ * Precedence:
+ *   1. an explicit pythonPath passed by the caller (tests, custom deployments)
+ *   2. $BGS_PYTHON, for a venv somewhere other than the default
+ *   3. the bootstrapped venv, if it exists
+ *   4. bare "python" off PATH
+ *
+ * Step 4 is the historical behaviour and is retained only as a fallback: it
+ * requires the user to have installed mo2-mcp-sidecar into whatever interpreter
+ * happens to be first on PATH. Steps 2 and 3 are what make an unconfigured
+ * install work after running scripts/bootstrap-python-venv.ps1.
+ *
+ * Configured paths are honoured even if they do not exist on disk, so a typo in
+ * $BGS_PYTHON surfaces as a clear spawn failure naming that path rather than
+ * silently falling through to a different interpreter.
+ */
+export function resolveSidecarPython(opts = {}) {
+    const explicit = opts.pythonPath?.trim();
+    if (explicit)
+        return explicit;
+    const fromEnv = process.env.BGS_PYTHON?.trim();
+    if (fromEnv)
+        return fromEnv;
+    const venvPython = defaultVenvPython(opts.home);
+    if (existsSync(venvPython))
+        return venvPython;
+    return "python";
+}
 export class SidecarClient {
     proc;
     buffer = "";
@@ -30,7 +78,7 @@ export class SidecarClient {
         return this.launch(opts);
     }
     async launch(opts) {
-        const python = opts.pythonPath ?? "python";
+        const python = resolveSidecarPython({ pythonPath: opts.pythonPath });
         const args = [
             "-m",
             "mo2_mcp_sidecar",
