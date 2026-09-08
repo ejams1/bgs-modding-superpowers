@@ -13,7 +13,7 @@ import { registerTool } from "../tool-registry.js";
 import { routeToPlanApply } from "../plan-apply.js";
 import { atomicWriteText } from "../atomic.js";
 import { readProfile } from "../profile-reader.js";
-import { resolveProfileDir } from "../path-helpers.js";
+import { resolveProfileDir, resolveProfileName } from "../path-helpers.js";
 import { assertActiveProfile } from "../profile-guard.js";
 import { requireBoundContext } from "../binding.js";
 import { pollPluginWarnings } from "../plugin-warnings.js";
@@ -29,14 +29,19 @@ const inputSchema = z.discriminatedUnion("mode", [
         mode: z.literal("plan"),
         name: z.string().min(1),
         enabled: z.boolean(),
-        profile: z.string().default("Default"),
+        profile: z.string().optional(),
     }),
     z.object({ mode: z.literal("apply"), plan_id: z.string().min(1), lease_token: z.string().min(1) }),
 ]);
 const handler = {
     toolName: "mo2_toggle_mod",
     async buildPlan(args, ctx) {
-        const profile = args.profile ?? "Default";
+        const profile = resolveProfileName(ctx, args.profile);
+        // Freeze the resolved profile into the stored plan. apply re-resolves from
+        // the same args, so without this a session rebound to another profile
+        // between plan and apply would apply the diff to a different profile than
+        // the one it was computed against.
+        args.profile = profile;
         // BUG-9 fix (2026-06-17): refuse plan generation when MO2 is live on a
         // different profile. The active-profile guard was only firing at apply
         // time, which let the planner mint a plan_id + lease_token + diff that
@@ -67,7 +72,7 @@ const handler = {
     async applyMutation(plan, ctx) {
         const bound = requireBoundContext(ctx);
         const args = plan.args;
-        const profile = args.profile ?? "Default";
+        const profile = resolveProfileName(ctx, args.profile);
         const preReport = args.enabled === false && bound.sidecar
             ? await previewOrUnavailable(() => reportForMod(args.name, bound, profile))
             : undefined;

@@ -26,7 +26,7 @@ import { registerTool } from "../tool-registry.js";
 import { routeToPlanApply } from "../plan-apply.js";
 import { atomicWriteText } from "../atomic.js";
 import { readProfile } from "../profile-reader.js";
-import { resolveModsDir, resolveProfileDir } from "../path-helpers.js";
+import { resolveModsDir, resolveProfileDir, resolveProfileName } from "../path-helpers.js";
 import { readMoIni, resolveGameName } from "../mo-ini.js";
 import { assertActiveProfile } from "../profile-guard.js";
 import { invalidateWorld } from "./state-sync.js";
@@ -52,7 +52,7 @@ const inputSchema = z.discriminatedUnion("mode", [
         mode: z.literal("plan"),
         archive_path: z.string().min(1),
         mod_name: z.string().min(1),
-        profile: z.string().default("Default"),
+        profile: z.string().optional(),
         target_priority: z.union([z.literal("gui_top"), z.literal("gui_bottom"), z.number().int()]).default("gui_bottom"),
         fomod_choices: z.array(FomodChoiceSchema).optional(),
         nexus_mod_id: z.number().int().optional(),
@@ -235,7 +235,12 @@ const handler = {
         }
         const archivePath = args.archive_path;
         const modName = args.mod_name;
-        const profile = args.profile ?? "Default";
+        const profile = resolveProfileName(ctx, args.profile);
+        // Freeze the resolved profile into the stored plan. apply re-resolves from
+        // the same args, so without this a session rebound to another profile
+        // between plan and apply would apply the diff to a different profile than
+        // the one it was computed against.
+        args.profile = profile;
         // BUG-9 fix (2026-06-17): refuse plan generation when MO2 is live on a
         // different profile (the modlist.txt that will be registered into
         // belongs to <profile>). assertActiveProfile is a no-op when MO2 is
@@ -280,7 +285,7 @@ const handler = {
         const args = plan.args;
         const archivePath = args.archive_path;
         const modName = args.mod_name;
-        const profile = args.profile ?? "Default";
+        const profile = resolveProfileName(ctx, args.profile);
         const modsDir = await resolveModsDir(ctx);
         const destPath = join(modsDir, modName);
         const installId = randomUUID();

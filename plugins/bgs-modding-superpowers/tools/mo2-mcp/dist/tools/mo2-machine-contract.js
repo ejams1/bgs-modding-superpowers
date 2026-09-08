@@ -12,6 +12,7 @@ import { readdir } from "node:fs/promises";
 import { registerTool } from "../tool-registry.js";
 import { readMoIni } from "../mo-ini.js";
 import { requireBoundContext, bindingSnapshot } from "../binding.js";
+import { resolveProfileName } from "../path-helpers.js";
 const inputSchema = z.object({
     only_enabled: z.boolean().default(false),
 });
@@ -30,7 +31,7 @@ registerTool({
         }
         const bound = requireBoundContext(ctx);
         const ini = await readMoIni(join(bound.config.mo2Root, "ModOrganizer.ini"));
-        const profileName = bound.config.allowedProfiles[0];
+        const profileName = resolveProfileName(ctx);
         const profileDir = join(bound.config.mo2Root, "profiles", profileName);
         const modsDir = ini.settings.modDirectory ?? join(bound.config.mo2Root, "mods");
         const gamePath = ini.general.gamePath ?? null;

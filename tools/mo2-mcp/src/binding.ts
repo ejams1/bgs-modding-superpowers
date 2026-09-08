@@ -181,9 +181,36 @@ export class BindingManager {
     let pipe: PipeClient | undefined;
     try {
       const loadedConfig = await this.loadConfigFn({ mo2Root: args.mo2Root });
-      const effectiveProfile = args.profile ?? loadedConfig.allowedProfiles[0] ?? "Default";
-      const config = promoteBoundProfile(loadedConfig, effectiveProfile);
       const ini = await this.readMoIniFn(join(args.mo2Root, "ModOrganizer.ini"));
+      // Resolve the session's profile ONCE, here, so every downstream tool can
+      // read it off allowedProfiles[0] instead of guessing.
+      //
+      // Precedence: explicit argument, then $BGS_MO2_PROFILE, then the profile
+      // MO2 itself has selected, then the config allowlist, then "Default".
+      //
+      // The env var is read here rather than only in the eager bind, so the
+      // chain holds for every bind path — an explicit mo2_session({ mo2Root })
+      // with no profile would otherwise silently ignore a configured
+      // BGS_MO2_PROFILE.
+      //
+      // ModOrganizer.ini's selected profile is what makes an unconfigured
+      // instance work at all: allowed_profiles defaults to ["Default"] when
+      // there is no .mo2-mcp.json, and on an instance whose only profile is
+      // named something else that default points at a directory that does not
+      // exist. Preferring the profile MO2 has actually selected reads current
+      // state rather than inventing one. Reading it here also means the
+      // @ByteArray decoding readMoIni performs (BUG-23) benefits every tool,
+      // not just mo2_status.
+      //
+      // This does not widen mo2_switch_profile's guardrail: that still refuses
+      // any target outside allowedProfiles.
+      const effectiveProfile =
+        args.profile?.trim() ||
+        process.env.BGS_MO2_PROFILE?.trim() ||
+        ini.general.selectedProfile?.trim() ||
+        loadedConfig.allowedProfiles[0] ||
+        "Default";
+      const config = promoteBoundProfile(loadedConfig, effectiveProfile);
       const profileDir = join(args.mo2Root, "profiles", effectiveProfile);
       // Resolve internal game KEY from either `game=` (older MO2) or `gameName=`
       // (newer MO2 — what real installs actually write). Without this fallback,

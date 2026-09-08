@@ -7,9 +7,10 @@ import { z } from "zod";
 import { join } from "node:path";
 import { registerTool } from "../tool-registry.js";
 import { requireBoundContext, bindingSnapshot } from "../binding.js";
+import { resolveProfileName } from "../path-helpers.js";
 
 const inputSchema = z.object({
-  profile: z.string().default("Default"),
+  profile: z.string().optional(),
   max_results: z.number().int().min(1).max(50000).default(10000),
   path_prefix: z.string().optional(),
 });
@@ -28,7 +29,7 @@ registerTool({
         error: { code: "sidecar_not_ready", message: "Python sidecar not available" },
       };
     }
-    const profile = (args.profile as string) ?? "Default";
+    const profile = resolveProfileName(ctx, args.profile as string | undefined);
     const profileDir = join(bound.config.mo2Root, "profiles", profile);
     const result = await bound.sidecar.call("assets.conflicts", {
       profile_dir: profileDir,

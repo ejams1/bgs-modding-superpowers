@@ -107,7 +107,7 @@ const handler = {
             }
         }
         if (bound.pipeClient) {
-            await invalidateWorld(ctx, updated.length ? updated : ["Default"]);
+            await invalidateWorld(ctx, updated);
         }
         await logApplyEvent(handler.toolName, `renamed "${oldName}" → "${newName}"`, bound, plan.planId, "");
         return { renamed_dir: true, profiles_updated: updated };

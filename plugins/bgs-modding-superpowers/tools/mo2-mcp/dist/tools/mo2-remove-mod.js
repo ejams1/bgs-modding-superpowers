@@ -10,7 +10,7 @@ import { cp, rm, readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { registerTool } from "../tool-registry.js";
 import { routeToPlanApply } from "../plan-apply.js";
-import { resolveModsDir } from "../path-helpers.js";
+import { resolveModsDir, resolveProfileName } from "../path-helpers.js";
 import { atomicWriteText } from "../atomic.js";
 import { invalidateWorld } from "./state-sync.js";
 import { requireBoundContext } from "../binding.js";
@@ -92,7 +92,7 @@ const handler = {
         const modPath = join(modsDir, name);
         let backupName;
         const bound = requireBoundContext(ctx);
-        const profile = bound.config.allowedProfiles[0] ?? "Default";
+        const profile = resolveProfileName(ctx);
         const preReport = bound.sidecar
             ? await previewOrUnavailable(() => reportForMod(name, bound, profile))
             : undefined;
@@ -132,7 +132,7 @@ const handler = {
             await rm(modPath, { recursive: true, force: true });
         }
         const profilesUpdated = await _scrubAllProfileModlists(bound.config.mo2Root, name);
-        await invalidateWorld(ctx, profilesUpdated.length ? profilesUpdated : ["Default"]);
+        await invalidateWorld(ctx, profilesUpdated);
         await logApplyEvent(handler.toolName, `removed "${name}" backup="${backupName ?? "none"}"`, bound, plan.planId, profile);
         const conflictsPreview = bound.sidecar
             ? isSidecarReport(preReport)

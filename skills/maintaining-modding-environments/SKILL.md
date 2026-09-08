@@ -76,6 +76,34 @@ For a venv somewhere other than the default, set `$env:BGS_PYTHON` to its
 interpreter — `resolveSidecarPython()` probes `$BGS_PYTHON`, then the default
 venv, then bare `python`.
 
+## Profile resolution
+
+The MO2 MCP resolves the session's profile once, at bind time, in this order:
+
+1. an explicit `mo2_session({ profile })` or a per-call `profile` argument;
+2. `$BGS_MO2_PROFILE`;
+3. `selected_profile` in `ModOrganizer.ini` — the profile MO2 itself has open;
+4. `allowed_profiles[0]` from `<MO2Root>/.mo2-mcp.json`;
+5. the literal `Default`.
+
+Every tool reads that one answer, so `mo2_status` cannot report a different
+profile than the one the mutating tools operate on. Omitting `profile` is
+correct and normal; pass it only to target a profile other than the bound one.
+
+`allowed_profiles` remains the guardrail `mo2_switch_profile` enforces — the
+resolution order above decides which profile the session *works on*, not which
+profiles it may switch MO2 to.
+
+Two symptoms worth recognizing during a health pass:
+
+- `ENOENT ...\profiles\Default\modlist.txt` on an instance with no profile
+  named `Default` means resolution fell all the way to step 5 — the instance
+  has no `.mo2-mcp.json`, no env var, and `ModOrganizer.ini` records no
+  selected profile. Set `$BGS_MO2_PROFILE` or bind explicitly.
+- A profile name containing non-ASCII characters is stored as
+  `selected_profile=@ByteArray(...\xHH)`. It is decoded on read; if a path ever
+  surfaces with a literal `\xHH` in it, that decoding regressed (BUG-23).
+
 ## Translator CLI maintenance
 
 `xtl` is the standalone AI translation CLI/Web GUI launcher. It is published on

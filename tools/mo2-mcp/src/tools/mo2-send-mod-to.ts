@@ -21,7 +21,7 @@ import { registerTool } from "../tool-registry.js";
 import { routeToPlanApply, type PlanApplyHandler } from "../plan-apply.js";
 import { atomicWriteText } from "../atomic.js";
 import { readProfile } from "../profile-reader.js";
-import { resolveProfileDir } from "../path-helpers.js";
+import { resolveProfileDir, resolveProfileName } from "../path-helpers.js";
 import { assertActiveProfile } from "../profile-guard.js";
 import type { ToolContext } from "../types.js";
 import { requireBoundContext } from "../binding.js";
@@ -53,7 +53,7 @@ const inputSchema = z.discriminatedUnion("mode", [
     target_mode: ModeSchema,
     anchor: z.string().min(1).optional(),
     target_priority: z.number().int().optional(),
-    profile: z.string().default("Default"),
+    profile: z.string().optional(),
   }).strict(),
   z.object({ mode: z.literal("apply"), plan_id: z.string().min(1), lease_token: z.string().min(1) }).strict(),
 ]);
@@ -131,7 +131,12 @@ async function _computeTargetPriority(
 const handler: PlanApplyHandler = {
   toolName: "mo2_send_mod_to",
   async buildPlan(args, ctx) {
-    const profile = (args.profile as string) ?? "Default";
+    const profile = resolveProfileName(ctx, args.profile as string | undefined);
+    // Freeze the resolved profile into the stored plan. apply re-resolves from
+    // the same args, so without this a session rebound to another profile
+    // between plan and apply would apply the diff to a different profile than
+    // the one it was computed against.
+    args.profile = profile;
     // BUG-9 fix (2026-06-17): refuse plan generation when MO2 is live on a
     // different profile (mirrors the apply-time check). Priority reorder
     // targets the requested profile's modlist.txt; planning against the
@@ -164,7 +169,7 @@ const handler: PlanApplyHandler = {
   async applyMutation(plan, ctx) {
     const bound = requireBoundContext(ctx);
     const args = plan.args;
-    const profile = (args.profile as string) ?? "Default";
+    const profile = resolveProfileName(ctx, args.profile as string | undefined);
     const preReport = bound.sidecar
       ? await previewOrUnavailable(() => reportForMod(args.name as string, bound, profile))
       : undefined;

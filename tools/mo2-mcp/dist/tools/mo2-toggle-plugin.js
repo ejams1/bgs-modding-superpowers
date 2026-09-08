@@ -14,7 +14,7 @@ import { join } from "node:path";
 import { registerTool } from "../tool-registry.js";
 import { routeToPlanApply } from "../plan-apply.js";
 import { atomicWriteText } from "../atomic.js";
-import { resolveModsDir, resolveProfileDir } from "../path-helpers.js";
+import { resolveModsDir, resolveProfileDir, resolveProfileName } from "../path-helpers.js";
 import { assertActiveProfile } from "../profile-guard.js";
 import { requireBoundContext } from "../binding.js";
 import { pollPluginWarnings } from "../plugin-warnings.js";
@@ -25,14 +25,19 @@ const inputSchema = z.discriminatedUnion("mode", [
         name: z.string(),
         enabled: z.boolean(),
         also_hide_file: z.boolean().default(false),
-        profile: z.string().default("Default"),
+        profile: z.string().optional(),
     }),
     z.object({ mode: z.literal("apply"), plan_id: z.string(), lease_token: z.string() }),
 ]);
 const handler = {
     toolName: "mo2_toggle_plugin",
     async buildPlan(args, ctx) {
-        const profile = args.profile ?? "Default";
+        const profile = resolveProfileName(ctx, args.profile);
+        // Freeze the resolved profile into the stored plan. apply re-resolves from
+        // the same args, so without this a session rebound to another profile
+        // between plan and apply would apply the diff to a different profile than
+        // the one it was computed against.
+        args.profile = profile;
         // BUG-9 fix (2026-06-17): same cross-profile guard as mo2_toggle_mod
         // buildPlan. Without this, a plan can be minted against
         // profiles/<other>/plugins.txt while the live broker owns plugins.txt
@@ -70,7 +75,7 @@ const handler = {
     async applyMutation(plan, ctx) {
         const bound = requireBoundContext(ctx);
         const args = plan.args;
-        const profile = args.profile ?? "Default";
+        const profile = resolveProfileName(ctx, args.profile);
         const pluginsPath = join(resolveProfileDir(ctx, profile), "plugins.txt");
         let brokerResult;
         if (bound.pipeClient) {

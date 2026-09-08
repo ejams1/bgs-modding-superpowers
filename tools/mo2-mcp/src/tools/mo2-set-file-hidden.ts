@@ -16,6 +16,7 @@ import type { ToolContext } from "../types.js";
 import { invalidateWorld } from "./state-sync.js";
 import { requireBoundContext, bindingSnapshot } from "../binding.js";
 import { logApplyEvent } from "../log-apply.js";
+import { resolveProfileDir } from "../path-helpers.js";
 
 // BUG-10 fix (2026-06-17): virtual_path + plan_id + lease_token gain .min(1).
 const inputSchema = z.discriminatedUnion("mode", [
@@ -45,7 +46,7 @@ async function _resolveOffline(ctx: ToolContext, virtualPath: string): Promise<s
   const bound = requireBoundContext(ctx);
   const ini = await readMoIni(join(bound.config.mo2Root, "ModOrganizer.ini"));
   const modsDir = ini.settings.modDirectory ?? join(bound.config.mo2Root, "mods");
-  const profile = await readProfile(join(bound.config.mo2Root, "profiles", "Default"));
+  const profile = await readProfile(resolveProfileDir(ctx));
   const enabled = profile.mods
     .filter((mod) => mod.enabled && !mod.isSeparator)
     .sort((a, b) => b.priority - a.priority);
@@ -140,7 +141,7 @@ const handler: PlanApplyHandler = {
     }
 
     await rename(realPath, state.newPath);
-    await invalidateWorld(ctx, ["Default"]);
+    await invalidateWorld(ctx);
     await logApplyEvent(
       handler.toolName,
       `${hidden ? "hidden" : "unhidden"} "${plan.args.virtual_path as string}"`,

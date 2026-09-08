@@ -14,13 +14,14 @@ import { routeToPlanApply } from "../plan-apply.js";
 import { readMoIni } from "../mo-ini.js";
 import { requireBoundContext } from "../binding.js";
 import { logApplyEvent } from "../log-apply.js";
+import { resolveProfileName } from "../path-helpers.js";
 // BUG-10 fix (2026-06-17): executable title + plan_id + lease_token gain .min(1).
 const inputSchema = z.discriminatedUnion("mode", [
     z.object({
         mode: z.literal("plan"),
         title: z.string().min(1),
         wait: z.boolean().default(false),
-        profile: z.string().default("Default"),
+        profile: z.string().optional(),
     }),
     z.object({ mode: z.literal("apply"), plan_id: z.string().min(1), lease_token: z.string().min(1) }),
 ]);
@@ -54,7 +55,9 @@ const handler = {
         const args = plan.args;
         const title = args.title;
         const wait = args.wait ?? false;
-        const profile = args.profile ?? "Default";
+        // buildPlan does not resolve a profile for this tool, so there is nothing to
+        // freeze — resolution happens only here, at apply.
+        const profile = resolveProfileName(ctx, args.profile);
         if (bound.pipeClient) {
             const started = await bound.pipeClient.call("organizer.start_application", {
                 executable: title,

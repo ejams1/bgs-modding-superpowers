@@ -10,7 +10,7 @@ import { mkdir } from "node:fs/promises";
 import { registerTool } from "../tool-registry.js";
 import { routeToPlanApply, type PlanApplyHandler } from "../plan-apply.js";
 import { readProfile } from "../profile-reader.js";
-import { resolveProfileDir } from "../path-helpers.js";
+import { resolveProfileDir, resolveProfileName } from "../path-helpers.js";
 import { readMoIni } from "../mo-ini.js";
 import { atomicWriteText } from "../atomic.js";
 import { assertActiveProfile } from "../profile-guard.js";
@@ -24,7 +24,7 @@ const inputSchema = z.discriminatedUnion("mode", [
     name: z.string().min(1),
     wins_over: z.string().min(1).optional(),
     color: z.string().optional(),
-    profile: z.string().default("Default"),
+    profile: z.string().optional(),
   }).strict(),
   z.object({ mode: z.literal("apply"), plan_id: z.string().min(1), lease_token: z.string().min(1) }).strict(),
 ]);
@@ -56,7 +56,12 @@ const handler: PlanApplyHandler = {
   async buildPlan(args, ctx) {
     const bound = requireBoundContext(ctx);
     if (!bound.pipeClient) throw new Error("live_mo2_required");
-    const profile = (args.profile as string | undefined) ?? "Default";
+    const profile = resolveProfileName(ctx, args.profile as string | undefined);
+    // Freeze the resolved profile into the stored plan. apply re-resolves from
+    // the same args, so without this a session rebound to another profile
+    // between plan and apply would apply the diff to a different profile than
+    // the one it was computed against.
+    args.profile = profile;
     // BUG-9 fix (2026-06-17): refuse plan generation when the requested
     // profile is not the live MO2's active profile; mirrors the
     // applyMutation guard.
@@ -76,7 +81,7 @@ const handler: PlanApplyHandler = {
   async applyMutation(plan, ctx) {
     const bound = requireBoundContext(ctx);
     if (!bound.pipeClient) throw new Error("live_mo2_required");
-    const profile = (plan.args.profile as string | undefined) ?? "Default";
+    const profile = resolveProfileName(ctx, plan.args.profile as string | undefined);
     await assertActiveProfile(ctx, profile);
     const sepName = _separatorName(plan.args.name);
     const winsOver = plan.args.wins_over as string | undefined;

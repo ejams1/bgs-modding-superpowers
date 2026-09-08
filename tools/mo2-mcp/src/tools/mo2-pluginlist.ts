@@ -10,9 +10,10 @@ import { join } from "node:path";
 import { registerTool } from "../tool-registry.js";
 import { readProfile } from "../profile-reader.js";
 import { requireBoundContext } from "../binding.js";
+import { resolveProfileName } from "../path-helpers.js";
 
 const inputSchema = z.object({
-  profile: z.string().default("Default"),
+  profile: z.string().optional(),
   enrich: z.boolean().default(false),
 });
 
@@ -57,7 +58,7 @@ registerTool({
   inputSchema,
   handler: async (args, ctx) => {
     const bound = requireBoundContext(ctx);
-    const profile = (args.profile as string) ?? "Default";
+    const profile = resolveProfileName(ctx, args.profile as string | undefined);
     const profileDir = join(bound.config.mo2Root, "profiles", profile);
     const p = await readProfile(profileDir);
     let plugins: PluginRow[] = p.plugins.map((pl) => ({ ...pl }));

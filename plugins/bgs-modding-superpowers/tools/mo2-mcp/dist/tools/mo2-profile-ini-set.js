@@ -15,13 +15,14 @@ import { readMoIni, resolveGameName } from "../mo-ini.js";
 import { detectMo2Running } from "../detection.js";
 import { requireBoundContext } from "../binding.js";
 import { logApplyEvent } from "../log-apply.js";
+import { resolveProfileName } from "../path-helpers.js";
 // BUG-10 fix (2026-06-17): section + key + plan_id + lease_token gain .min(1).
 // `value` stays a free-form string — clearing an INI key to empty is a
 // legitimate use of upsertIniValue.
 const inputSchema = z.discriminatedUnion("mode", [
     z.object({
         mode: z.literal("plan"),
-        profile: z.string().default("Default"),
+        profile: z.string().optional(),
         ini_name: z.enum(["game", "prefs", "custom"]),
         section: z.string().min(1),
         key: z.string().min(1),
@@ -48,7 +49,12 @@ const handler = {
     toolName: "mo2_profile_ini_set",
     async buildPlan(args, ctx) {
         const bound = requireBoundContext(ctx);
-        const profile = args.profile ?? "Default";
+        const profile = resolveProfileName(ctx, args.profile);
+        // Freeze the resolved profile into the stored plan. apply re-resolves from
+        // the same args, so without this a session rebound to another profile
+        // between plan and apply would apply the diff to a different profile than
+        // the one it was computed against.
+        args.profile = profile;
         const profileDir = join(bound.config.mo2Root, "profiles", profile);
         const det = await detectMo2Running({ mo2Root: bound.config.mo2Root, profileDir });
         if (det.profileLockHeld) {
@@ -64,7 +70,7 @@ const handler = {
     async applyMutation(plan, ctx) {
         const args = plan.args;
         const bound = requireBoundContext(ctx);
-        const profile = args.profile ?? "Default";
+        const profile = resolveProfileName(ctx, args.profile);
         const iniPath = await _resolveIniPath({
             profile,
             ini_name: args.ini_name,

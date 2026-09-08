@@ -1,4 +1,4 @@
-import { resolveProfileDir } from "../path-helpers.js";
+import { resolveProfileDir, resolveProfileName } from "../path-helpers.js";
 import { requireBoundContext } from "../binding.js";
 /**
  * Sidecar World cache invalidation after mod-mutation operations.
@@ -11,11 +11,16 @@ import { requireBoundContext } from "../binding.js";
  * tell the sidecar to drop its World cache so subsequent assets reads pick up the
  * post-mutation filesystem state.
  */
-export async function invalidateWorld(ctx, profiles = ["Default"]) {
+export async function invalidateWorld(ctx, profiles) {
     const sidecar = requireBoundContext(ctx).sidecar;
     if (!sidecar)
         return;
-    for (const profile of Array.from(new Set(profiles))) {
+    // No explicit profiles means "whatever this session is bound to". Callers
+    // that computed a list of touched profiles pass it through; an empty list
+    // means the mutation touched none by name, which still has to invalidate the
+    // bound profile's World cache.
+    const targets = profiles?.length ? profiles : [resolveProfileName(ctx)];
+    for (const profile of Array.from(new Set(targets))) {
         await sidecar.call("world.invalidate", { profile_dir: resolveProfileDir(ctx, profile) });
     }
 }

@@ -7,9 +7,10 @@ import { z } from "zod";
 import { join } from "node:path";
 import { registerTool } from "../tool-registry.js";
 import { requireBoundContext } from "../binding.js";
+import { resolveProfileName } from "../path-helpers.js";
 // BUG-10 fix (2026-06-17): virtual_path gains .min(1).
 const inputSchema = z.object({
-    profile: z.string().default("Default"),
+    profile: z.string().optional(),
     virtual_path: z.string().min(1),
 });
 registerTool({
@@ -25,7 +26,7 @@ registerTool({
                 error: { code: "sidecar_not_ready", message: "Python sidecar not available" },
             };
         }
-        const profile = args.profile ?? "Default";
+        const profile = resolveProfileName(ctx, args.profile);
         const profileDir = join(bound.config.mo2Root, "profiles", profile);
         const result = await bound.sidecar.call("assets.resolve_file", {
             profile_dir: profileDir,

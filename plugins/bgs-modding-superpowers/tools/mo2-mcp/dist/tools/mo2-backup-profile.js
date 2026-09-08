@@ -9,13 +9,13 @@ import { copyFile, mkdir, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { registerTool } from "../tool-registry.js";
 import { routeToPlanApply } from "../plan-apply.js";
-import { resolveProfileDir } from "../path-helpers.js";
+import { resolveProfileDir, resolveProfileName } from "../path-helpers.js";
 import { requireBoundContext } from "../binding.js";
 import { logApplyEvent } from "../log-apply.js";
 const inputSchema = z.discriminatedUnion("mode", [
     z.object({
         mode: z.literal("plan"),
-        profile: z.string().default("Default"),
+        profile: z.string().optional(),
         label: z.string().optional(),
     }),
     z.object({ mode: z.literal("apply"), plan_id: z.string(), lease_token: z.string() }),
@@ -29,7 +29,12 @@ function _backupDir(ctx, profile, label) {
 const handler = {
     toolName: "mo2_backup_profile",
     async buildPlan(args, ctx) {
-        const profile = args.profile ?? "Default";
+        const profile = resolveProfileName(ctx, args.profile);
+        // Freeze the resolved profile into the stored plan. apply re-resolves from
+        // the same args, so without this a session rebound to another profile
+        // between plan and apply would apply the diff to a different profile than
+        // the one it was computed against.
+        args.profile = profile;
         const profileDir = resolveProfileDir(ctx, profile);
         const label = args.label ?? _timestampLabel();
         const backupDir = _backupDir(ctx, profile, label);
@@ -44,7 +49,7 @@ const handler = {
         };
     },
     async applyMutation(plan, ctx) {
-        const profile = plan.args.profile ?? "Default";
+        const profile = resolveProfileName(ctx, plan.args.profile);
         const profileDir = resolveProfileDir(ctx, profile);
         const label = plan.args.label ?? _timestampLabel();
         const backupDir = _backupDir(ctx, profile, label);

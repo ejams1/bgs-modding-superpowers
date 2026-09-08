@@ -10,7 +10,7 @@ import { mkdir } from "node:fs/promises";
 import { registerTool } from "../tool-registry.js";
 import { routeToPlanApply } from "../plan-apply.js";
 import { readProfile } from "../profile-reader.js";
-import { resolveProfileDir, resolveModsDir } from "../path-helpers.js";
+import { resolveModsDir, resolveProfileDir, resolveProfileName } from "../path-helpers.js";
 import { assertActiveProfile } from "../profile-guard.js";
 import { invalidateWorld } from "./state-sync.js";
 import { requireBoundContext } from "../binding.js";
@@ -20,7 +20,7 @@ const inputSchema = z.discriminatedUnion("mode", [
         mode: z.literal("plan"),
         name: z.string().min(1),
         wins_over: z.string().min(1).optional(),
-        profile: z.string().default("Default"),
+        profile: z.string().optional(),
     }).strict(),
     z.object({ mode: z.literal("apply"), plan_id: z.string().min(1), lease_token: z.string().min(1) }).strict(),
 ]);
@@ -44,7 +44,12 @@ const handler = {
         const bound = requireBoundContext(ctx);
         if (!bound.pipeClient)
             throw new Error("live_mo2_required_for_create_mod");
-        const profile = args.profile ?? "Default";
+        const profile = resolveProfileName(ctx, args.profile);
+        // Freeze the resolved profile into the stored plan. apply re-resolves from
+        // the same args, so without this a session rebound to another profile
+        // between plan and apply would apply the diff to a different profile than
+        // the one it was computed against.
+        args.profile = profile;
         // BUG-9 fix (2026-06-17): refuse plan generation when the requested
         // profile is not the live MO2's active profile. The applyMutation path
         // already enforces this; pushing it up to buildPlan prevents misleading
@@ -66,7 +71,7 @@ const handler = {
         const bound = requireBoundContext(ctx);
         if (!bound.pipeClient)
             throw new Error("live_mo2_required_for_create_mod");
-        const profile = plan.args.profile ?? "Default";
+        const profile = resolveProfileName(ctx, plan.args.profile);
         await assertActiveProfile(ctx, profile);
         const winsOver = plan.args.wins_over;
         const targetPri = await _targetPriority(bound.config.mo2Root, profile, winsOver);
