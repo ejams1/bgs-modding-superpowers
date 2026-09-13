@@ -34,7 +34,12 @@ function Resolve-Mo2ControlPlaneLiveBootstrapRoot {
         return (Resolve-Path -Path $Path -ErrorAction Stop).Path
     }
     catch {
-        throw "Live bootstrap root not found: $Path"
+        $lines = @(
+            "Live bootstrap root not found: $Path",
+            "The MO2 control plane (mo2_agent_control.py) has not been deployed to this MO2 instance yet - this is a one-time per-instance setup step, not a bug to work around by touching docs/internal/future-c-kernel (that is an unbuilt C++ design skeleton, not the real plugin).",
+            "Fix: scripts\install-mo2-control-plane.ps1 -MO2Root '<MO2_Root>' (from this plugin's root), then relaunch MO2 so it loads the plugin and publishes the bootstrap runtime files."
+        )
+        throw ($lines -join "`n")
     }
 }
 
