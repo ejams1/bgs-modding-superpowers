@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
 
 const spawnCalls: Array<{ command: string; args: string[] }> = [];
@@ -23,6 +23,9 @@ vi.mock("node:timers/promises", () => ({
 
 vi.mock("../../src/daemon-adapter.js", () => ({
   createPowershellAdapter: vi.fn(() => ({
+    call: vi.fn(async () => ({ ok: true, result: { files: ["Dummy.esm"] } })),
+  })),
+  createNativeAdapter: vi.fn(() => ({
     call: vi.fn(async () => ({ ok: true, result: { files: ["Dummy.esm"] } })),
   })),
 }));
@@ -60,7 +63,17 @@ describe("launchDaemon readiness-timeout cleanup", () => {
     spawnCalls.length = 0;
     processWaitStatus = "running";
     stuckLaunchSpawn = false;
+    delete process.env.BGS_XEDIT_FORCE_PWSH_ADAPTER;
     vi.resetModules();
+    // vi.mock factories are cached across resetModules(), so the createNativeAdapter/
+    // createPowershellAdapter spies persist call history between tests — clear it so
+    // per-test toHaveBeenCalledTimes/not.toHaveBeenCalled assertions are isolated.
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    // Prevent leaking into other test files sharing this vitest worker.
+    delete process.env.BGS_XEDIT_FORCE_PWSH_ADAPTER;
   });
 
   it("kills the in-flight spawn and rejects with LaunchAbortedError when aborted mid-launch", async () => {
@@ -250,5 +263,53 @@ describe("launchDaemon readiness-timeout cleanup", () => {
       timeoutMs: 30_000,
       run,
     })).resolves.toBe(false);
+  });
+
+  describe("adapter selection (L4 tier 1)", () => {
+    it("uses createNativeAdapter by default, passing launcherPath as xeditExecutable", async () => {
+      const { launchDaemon } = await import("../../src/launch.js");
+      const { createNativeAdapter, createPowershellAdapter } = await import("../../src/daemon-adapter.js");
+
+      await launchDaemon({
+        clientScript: "D:/awesome-bgs-mod-master/tools/mo2-vfs-launcher/xedit-client.ps1",
+        launcherPath: "D:/awesome-bgs-mod-master/.artifacts/mo2/Stock Game/Fallout 4/Tools/OpenCodeXEdit/xEdit.exe",
+        gameMode: "Fallout4",
+        moProfile: "Default",
+        readyTimeoutMs: 10_000,
+      });
+
+      expect(createNativeAdapter).toHaveBeenCalledTimes(1);
+      expect(createNativeAdapter).toHaveBeenCalledWith(
+        expect.objectContaining({
+          xeditExecutable:
+            "D:/awesome-bgs-mod-master/.artifacts/mo2/Stock Game/Fallout 4/Tools/OpenCodeXEdit/xEdit.exe",
+          pid: 4242,
+        }),
+      );
+      expect(createPowershellAdapter).not.toHaveBeenCalled();
+    });
+
+    it("falls back to createPowershellAdapter when BGS_XEDIT_FORCE_PWSH_ADAPTER is truthy", async () => {
+      process.env.BGS_XEDIT_FORCE_PWSH_ADAPTER = "1";
+      const { launchDaemon } = await import("../../src/launch.js");
+      const { createNativeAdapter, createPowershellAdapter } = await import("../../src/daemon-adapter.js");
+
+      await launchDaemon({
+        clientScript: "D:/awesome-bgs-mod-master/tools/mo2-vfs-launcher/xedit-client.ps1",
+        launcherPath: "D:/awesome-bgs-mod-master/.artifacts/mo2/Stock Game/Fallout 4/Tools/OpenCodeXEdit/xEdit.exe",
+        gameMode: "Fallout4",
+        moProfile: "Default",
+        readyTimeoutMs: 10_000,
+      });
+
+      expect(createPowershellAdapter).toHaveBeenCalledTimes(1);
+      expect(createPowershellAdapter).toHaveBeenCalledWith(
+        expect.objectContaining({
+          clientScript: "D:/awesome-bgs-mod-master/tools/mo2-vfs-launcher/xedit-client.ps1",
+          pid: 4242,
+        }),
+      );
+      expect(createNativeAdapter).not.toHaveBeenCalled();
+    });
   });
 });

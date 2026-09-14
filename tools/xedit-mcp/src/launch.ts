@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { setTimeout as sleep } from "node:timers/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { createPowershellAdapter, type DaemonAdapter } from "./daemon-adapter.js";
+import { createNativeAdapter, createPowershellAdapter, type DaemonAdapter } from "./daemon-adapter.js";
 
 /**
  * Launch options for the broker / OpenCodeVfsLauncher path.
@@ -257,12 +257,22 @@ export async function launchDaemon(opts: LaunchOptions): Promise<LaunchedDaemon>
       throw new Error(`Daemon not ready within ${opts.readyTimeoutMs ?? 180_000} ms (pid=${launchedPid}).${detail}`);
     }
 
-    const adapter = createPowershellAdapter({
-      clientScript: opts.clientScript,
-      pid: launchedPid,
-      scratchDir: join(tmpdir(), "xedit-mcp-calls", String(launchedPid)),
-      pwshExe: pwsh,
-    });
+    // L4 tier 1: default to the direct xEdit.exe spawn (no pwsh hop). The pwsh-hop
+    // adapter is kept as a fallback for one release — set BGS_XEDIT_FORCE_PWSH_ADAPTER
+    // to any truthy value to force it if the native path misbehaves in the field.
+    // See docs/internal/reviews/2026-09-14-inherited-project-review.md finding L4.
+    const adapter = process.env.BGS_XEDIT_FORCE_PWSH_ADAPTER
+      ? createPowershellAdapter({
+          clientScript: opts.clientScript,
+          pid: launchedPid,
+          scratchDir: join(tmpdir(), "xedit-mcp-calls", String(launchedPid)),
+          pwshExe: pwsh,
+        })
+      : createNativeAdapter({
+          xeditExecutable: opts.launcherPath,
+          pid: launchedPid,
+          scratchDir: join(tmpdir(), "xedit-mcp-calls", String(launchedPid)),
+        });
 
     // Phase B: poll files.list until it reports a non-empty load order.
     // xEdit may serve the pipe before plugin load completes; this guards against the race.
