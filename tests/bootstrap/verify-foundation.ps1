@@ -15,7 +15,7 @@ function Get-SectionContent {
     $escapedHeading = [regex]::Escape($Heading)
     $match = [regex]::Match($Content, "(?sm)^$escapedHeading\s*(.*?)(?=^##\s|\z)")
     if (-not $match.Success) {
-        throw "docs/roadmap.md is missing heading: $Heading"
+        throw "docs/internal/roadmap.md is missing heading: $Heading"
     }
 
     return $match.Groups[1].Value
@@ -175,8 +175,8 @@ $requiredPaths = @(
     ".opencode/INSTALL.md",
     ".opencode/README.md",
     "README.md",
-    "docs/roadmap.md",
-    "docs/standards/repo-hygiene.md"
+    "docs/internal/roadmap.md",
+    "docs/internal/standards/repo-hygiene.md"
 )
 
 $missing = $requiredPaths | Where-Object { -not (Test-Path $_) }
@@ -189,7 +189,7 @@ if ($readme -notmatch "BGS modpack curation" -or $readme -notmatch "not general 
     throw "README.md is missing the curation-vs-authoring scope statement"
 }
 
-$roadmap = Get-Content "docs/roadmap.md" -Raw
+$roadmap = Get-Content "docs/internal/roadmap.md" -Raw
 $missionSection = Get-SectionContent -Content $roadmap -Heading "## Mission"
 $workflowSection = Get-SectionContent -Content $roadmap -Heading "## Systematic Modpack Workflow"
 $capabilitySection = Get-SectionContent -Content $roadmap -Heading "## Capability Map"
@@ -201,7 +201,7 @@ $completedFoundationsSection = Get-SectionContent -Content $roadmap -Heading "##
 $currentFocusSection = Get-SectionContent -Content $roadmap -Heading "## Current Focus"
 $supportingDocsSection = Get-SectionContent -Content $roadmap -Heading "## Supporting Docs"
 
-Assert-ContainsSignals -SectionName "docs/roadmap.md mission section" -Content $missionSection -Signals @(
+Assert-ContainsSignals -SectionName "docs/internal/roadmap.md mission section" -Content $missionSection -Signals @(
     "BGS modpack curation",
     "Skyrim",
     "Fallout 4",
@@ -211,14 +211,14 @@ Assert-ContainsSignals -SectionName "docs/roadmap.md mission section" -Content $
     "multi-session"
 )
 
-Assert-ContainsSignals -SectionName "docs/roadmap.md workflow section" -Content $workflowSection -Signals @(
+Assert-ContainsSignals -SectionName "docs/internal/roadmap.md workflow section" -Content $workflowSection -Signals @(
     "MO2",
     "xEdit",
     "localization",
     "testing"
 )
 
-Assert-ContainsConceptFamilies -SectionName "docs/roadmap.md workflow section" -Content $workflowSection -Families @(
+Assert-ContainsConceptFamilies -SectionName "docs/internal/roadmap.md workflow section" -Content $workflowSection -Families @(
     @{ Name = "setup-runtime"; Alternatives = @(@("environment", "setup"), @("runtime", "toolchain")) },
     @{ Name = "evaluation"; Alternatives = @(@("mod", "evaluation"), @("discovery", "evaluation")) },
     @{ Name = "controlled-installation"; Alternatives = @(@("controlled", "installation"), @("incremental", "installation")) },
@@ -228,13 +228,13 @@ Assert-ContainsConceptFamilies -SectionName "docs/roadmap.md workflow section" -
     @{ Name = "documentation"; Alternatives = @(@("documentation", "modpack"), @("dev-log", "changelog")) }
 )
 
-Assert-MatchesAnyConcept -SectionName "docs/roadmap.md workflow section" -Content $workflowSection -ConceptGroups @(
+Assert-MatchesAnyConcept -SectionName "docs/internal/roadmap.md workflow section" -Content $workflowSection -ConceptGroups @(
     @("freeze", "release baseline"),
     @("document-and-freeze", "release-baseline"),
     @("validated state", "freeze")
 )
 
-Assert-ContainsSignals -SectionName "docs/roadmap.md capability map" -Content $capabilitySection -Signals @(
+Assert-ContainsSignals -SectionName "docs/internal/roadmap.md capability map" -Content $capabilitySection -Signals @(
     "repository/standards",
     "OpenCode packaging",
     "repo-bootstrap agent",
@@ -247,7 +247,7 @@ Assert-ContainsSignals -SectionName "docs/roadmap.md capability map" -Content $c
     "safety hooks"
 )
 
-Assert-ContainsConceptFamilies -SectionName "docs/roadmap.md capability map" -Content $capabilitySection -Families @(
+Assert-ContainsConceptFamilies -SectionName "docs/internal/roadmap.md capability map" -Content $capabilitySection -Families @(
     @{ Name = "dev-log-changelog"; Alternatives = @(@("dev log", "workflow"), @("release", "changelog")) },
     @{ Name = "mcp-knowledge"; Alternatives = @(@("MCP", "integrations"), @("knowledge", "research")) },
     @{ Name = "archive-reasoning"; Alternatives = @(@("archive", "file"), @("loose-file", "reasoning")) },
@@ -256,28 +256,28 @@ Assert-ContainsConceptFamilies -SectionName "docs/roadmap.md capability map" -Co
     @{ Name = "benchmark-smoke-test"; Alternatives = @(@("benchmark", "smoke-test"), @("smoke-test", "release baselines"), @("benchmark", "install batches")) }
 )
 
-Assert-MatchesAnyConcept -SectionName "docs/roadmap.md capability map" -Content $capabilitySection -ConceptGroups @(
+Assert-MatchesAnyConcept -SectionName "docs/internal/roadmap.md capability map" -Content $capabilitySection -ConceptGroups @(
     @("benchmark", "smoke-test"),
     @("benchmark", "install batches"),
     @("smoke-test", "release baselines")
 )
 
-Assert-MatchesAnyConcept -SectionName "docs/roadmap.md capability map" -Content $capabilitySection -ConceptGroups @(
+Assert-MatchesAnyConcept -SectionName "docs/internal/roadmap.md capability map" -Content $capabilitySection -ConceptGroups @(
     @("game-specific", "risk"),
     @("game-specific risk")
 )
 
-Assert-MatchesAnyConcept -SectionName "docs/roadmap.md capability map" -Content $capabilitySection -ConceptGroups @(
+Assert-MatchesAnyConcept -SectionName "docs/internal/roadmap.md capability map" -Content $capabilitySection -ConceptGroups @(
     @("mod-quality", "heuristics"),
     @("quality", "heuristics")
 )
 
-Assert-MatchesAnyConcept -SectionName "docs/roadmap.md capability map" -Content $capabilitySection -ConceptGroups @(
+Assert-MatchesAnyConcept -SectionName "docs/internal/roadmap.md capability map" -Content $capabilitySection -ConceptGroups @(
     @("localization", "glossary"),
     @("glossary", "translation")
 )
 
-Assert-ContainsSignals -SectionName "docs/roadmap.md phase ladder" -Content $phaseLadderSection -Signals @(
+Assert-ContainsSignals -SectionName "docs/internal/roadmap.md phase ladder" -Content $phaseLadderSection -Signals @(
     "Phase 0",
     "Phase 9",
     "xEdit",
@@ -288,20 +288,20 @@ Assert-ContainsSignals -SectionName "docs/roadmap.md phase ladder" -Content $pha
     "packaging"
 )
 
-Assert-ContainsNoSignals -SectionName "docs/roadmap.md phase ladder" -Content $phaseLadderSection -Signals @(
+Assert-ContainsNoSignals -SectionName "docs/internal/roadmap.md phase ladder" -Content $phaseLadderSection -Signals @(
     "`xedit-cli` contract",
     "tools/xedit-cli/CONTRACT.md"
 )
 
-Assert-ContainsPattern -SectionName "docs/roadmap.md phase ladder" -Content $phaseLadderSection -Pattern "Phase\s+0"
-Assert-ContainsPattern -SectionName "docs/roadmap.md phase ladder" -Content $phaseLadderSection -Pattern "Phase\s+9"
+Assert-ContainsPattern -SectionName "docs/internal/roadmap.md phase ladder" -Content $phaseLadderSection -Pattern "Phase\s+0"
+Assert-ContainsPattern -SectionName "docs/internal/roadmap.md phase ladder" -Content $phaseLadderSection -Pattern "Phase\s+9"
 
 $phaseMatches = [regex]::Matches($phaseLadderSection, "Phase\s+[0-9]")
 if ($phaseMatches.Count -lt 10) {
-    throw "docs/roadmap.md phase ladder must include a multi-phase sequence through Phase 9"
+    throw "docs/internal/roadmap.md phase ladder must include a multi-phase sequence through Phase 9"
 }
 
-Assert-ContainsSignals -SectionName "docs/roadmap.md dependency map" -Content $dependencySection -Signals @(
+Assert-ContainsSignals -SectionName "docs/internal/roadmap.md dependency map" -Content $dependencySection -Signals @(
     "xEdit",
     "native xEdit outer client",
     "tools/mo2-vfs-launcher/xedit-client.md",
@@ -309,12 +309,12 @@ Assert-ContainsSignals -SectionName "docs/roadmap.md dependency map" -Content $d
     "localization"
 )
 
-Assert-ContainsNoSignals -SectionName "docs/roadmap.md dependency map" -Content $dependencySection -Signals @(
+Assert-ContainsNoSignals -SectionName "docs/internal/roadmap.md dependency map" -Content $dependencySection -Signals @(
     "`xedit-cli` contract",
     "tools/xedit-cli/CONTRACT.md"
 )
 
-Assert-ContainsConceptFamilies -SectionName "docs/roadmap.md dependency map" -Content $dependencySection -Families @(
+Assert-ContainsConceptFamilies -SectionName "docs/internal/roadmap.md dependency map" -Content $dependencySection -Families @(
     @{ Name = "format-blocks-packaging"; Alternatives = @(@("plugin format", "OpenCode"), @("format", "packaging")) },
     @{ Name = "changelog-after-devlog"; Alternatives = @(@("release changelog", "dev-log"), @("changelog", "dev-log")) },
     @{ Name = "localization-after-stable-flows"; Alternatives = @(@("stable install", "conflict", "test"), @("install/conflict/test flows")) },
@@ -322,7 +322,7 @@ Assert-ContainsConceptFamilies -SectionName "docs/roadmap.md dependency map" -Co
     @{ Name = "save-safety-after-curator-loop"; Alternatives = @(@("save-safety", "follow", "real curator loop"), @("save-safety", "curator loop")) }
 )
 
-Assert-ContainsSignals -SectionName "docs/roadmap.md not yet real section" -Content $notYetRealSection -Signals @(
+Assert-ContainsSignals -SectionName "docs/internal/roadmap.md not yet real section" -Content $notYetRealSection -Signals @(
     "no functioning plugin package",
     "no working command entrypoints",
     "no real MCP adapters",
@@ -332,20 +332,20 @@ Assert-ContainsSignals -SectionName "docs/roadmap.md not yet real section" -Cont
     "no write-capable patch generation"
 )
 
-Assert-ContainsSignals -SectionName "docs/roadmap.md game-specific pressure points section" -Content $gamePressureSection -Signals @(
+Assert-ContainsSignals -SectionName "docs/internal/roadmap.md game-specific pressure points section" -Content $gamePressureSection -Signals @(
     "Skyrim",
     "Fallout 4",
     "Starfield"
 )
 
-Assert-ContainsConceptFamilies -SectionName "docs/roadmap.md game-specific pressure points section" -Content $gamePressureSection -Families @(
+Assert-ContainsConceptFamilies -SectionName "docs/internal/roadmap.md game-specific pressure points section" -Content $gamePressureSection -Families @(
     @{ Name = "skyrim-script-animation-behavior"; Alternatives = @(@("scripts", "animation"), @("behavior", "conflicts")) },
     @{ Name = "fo4-pressure"; Alternatives = @(@("precombine/previs", "Buffout"), @("BA2", "settlement"), @("precombine", "BA2")) },
     @{ Name = "starfield-toolchain-caution"; Alternatives = @(@("Starfield", "toolchain", "caution"), @("Starfield", "FO4/Skyrim", "assumptions"), @("Starfield", "evolving", "toolchain")) }
 )
 
-Assert-ContainsSignals -SectionName "docs/roadmap.md completed foundations section" -Content $completedFoundationsSection -Signals @(
-    "docs/standards/repo-hygiene.md",
+Assert-ContainsSignals -SectionName "docs/internal/roadmap.md completed foundations section" -Content $completedFoundationsSection -Signals @(
+    "docs/internal/standards/repo-hygiene.md",
     "agents/repo-bootstrap/AGENT.md",
     "skills/conflict-auditor/SKILL.md",
     "hooks/runtime-compatibility.md",
@@ -355,15 +355,15 @@ Assert-ContainsSignals -SectionName "docs/roadmap.md completed foundations secti
     "tests/bootstrap/verify-all.ps1"
 )
 
-Assert-ContainsSignals -SectionName "docs/roadmap.md current focus section" -Content $currentFocusSection -Signals @(
+Assert-ContainsSignals -SectionName "docs/internal/roadmap.md current focus section" -Content $currentFocusSection -Signals @(
     "first real workflow",
     "read-only xEdit conflict inspection",
     "conflict-auditor"
 )
 
-Assert-ContainsSignals -SectionName "docs/roadmap.md supporting docs section" -Content $supportingDocsSection -Signals @(
+Assert-ContainsSignals -SectionName "docs/internal/roadmap.md supporting docs section" -Content $supportingDocsSection -Signals @(
     "README.md",
-    "docs/standards/repo-hygiene.md",
+    "docs/internal/standards/repo-hygiene.md",
     "templates/README.md",
     "tools/README.md",
     "tools/mo2-vfs-launcher/xedit-client.md",
@@ -371,15 +371,15 @@ Assert-ContainsSignals -SectionName "docs/roadmap.md supporting docs section" -C
     "tests/README.md"
 )
 
-Assert-ContainsPattern -SectionName "docs/roadmap.md supporting docs section" -Content $supportingDocsSection -Pattern "docs/plans/[^\s`]+\.md"
+Assert-ContainsPattern -SectionName "docs/internal/roadmap.md supporting docs section" -Content $supportingDocsSection -Pattern "docs/plans/[^\s`]+\.md"
 
 $planDocMatches = [regex]::Matches($supportingDocsSection, "docs/plans/[^\s`]+\.md")
 if ($planDocMatches.Count -lt 2) {
-    throw "docs/roadmap.md supporting docs section must include plan-doc support, not just README-style files"
+    throw "docs/internal/roadmap.md supporting docs section must include plan-doc support, not just README-style files"
 }
 
 if (Test-HasTransientPromptReference $roadmap) {
-    throw "docs/roadmap.md should not treat the transient initial prompt file as a supporting source"
+    throw "docs/internal/roadmap.md should not treat the transient initial prompt file as a supporting source"
 }
 
 $gitignore = Get-Content ".gitignore" -Raw
@@ -389,10 +389,10 @@ foreach ($rule in @(".artifacts/*", "!.artifacts/.gitkeep", ".playwright-mcp/"))
     }
 }
 
-$repoHygiene = Get-Content "docs/standards/repo-hygiene.md" -Raw
+$repoHygiene = Get-Content "docs/internal/standards/repo-hygiene.md" -Raw
 foreach ($section in @("## Ignored Working Content", "## Artifact Lifecycle")) {
     if ($repoHygiene -notmatch [regex]::Escape($section)) {
-        throw "docs/standards/repo-hygiene.md is missing section: $section"
+        throw "docs/internal/standards/repo-hygiene.md is missing section: $section"
     }
 }
 
