@@ -3,10 +3,18 @@ import { EventEmitter } from "node:events";
 
 const spawnCalls: Array<{ command: string; args: string[] }> = [];
 let processWaitStatus = "running";
+// When true, the "launch" invocation's child never emits close/data on its
+// own — simulates the real stuck-outer-invocation scenario this test suite's
+// abort-signal test exercises. Every other spawn still auto-resolves.
+let stuckLaunchSpawn = false;
 
 class FakeChild extends EventEmitter {
   stdout = new EventEmitter();
   stderr = new EventEmitter();
+  killed = false;
+  kill = vi.fn(() => {
+    this.killed = true;
+  });
 }
 
 vi.mock("node:timers/promises", () => ({
@@ -33,6 +41,7 @@ vi.mock("node:child_process", () => ({
           : "other";
 
       if (mode === "launch") {
+        if (stuckLaunchSpawn) return; // never emits data or close — caller must abort
         child.stdout.emit("data", Buffer.from("process launch\nstatus: ok\nxedit-pid: 4242\n"));
       } else if (mode === "stop") {
         child.stdout.emit("data", Buffer.from("process stop\nstatus: stopped\nxedit-pid: 4242\n"));
@@ -50,7 +59,33 @@ describe("launchDaemon readiness-timeout cleanup", () => {
   beforeEach(() => {
     spawnCalls.length = 0;
     processWaitStatus = "running";
+    stuckLaunchSpawn = false;
     vi.resetModules();
+  });
+
+  it("kills the in-flight spawn and rejects with LaunchAbortedError when aborted mid-launch", async () => {
+    stuckLaunchSpawn = true;
+    const { launchDaemon, LaunchAbortedError } = await import("../../src/launch.js");
+    const controller = new AbortController();
+
+    const pending = launchDaemon({
+      clientScript: "D:/awesome-bgs-mod-master/tools/mo2-vfs-launcher/xedit-client.ps1",
+      launcherPath: "D:/awesome-bgs-mod-master/.artifacts/mo2/Stock Game/Fallout 4/Tools/OpenCodeXEdit/xEdit.exe",
+      gameMode: "Fallout4",
+      moProfile: "Default",
+      readyTimeoutMs: 30_000,
+      signal: controller.signal,
+    });
+
+    // Real-world equivalent of xedit_stop firing while the outer
+    // `xedit-client.ps1 process launch` invocation is still stuck (the
+    // directly-observed symptom this fix addresses: two such processes were
+    // still alive 11+ minutes after xedit_stop reported success).
+    controller.abort();
+
+    await expect(pending).rejects.toBeInstanceOf(LaunchAbortedError);
+    expect(spawnCalls).toHaveLength(1);
+    expect(spawnCalls[0]?.args).toContain("launch");
   });
 
   it("stops the launched pid before surfacing a readiness timeout", async () => {

@@ -72,6 +72,18 @@ export interface LaunchOptions {
   readyTimeoutMs?: number;
   /** PowerShell executable; defaults to "pwsh". */
   pwshExe?: string;
+  /**
+   * Abort signal for cancelling an in-flight launch. `xedit_stop`/`xedit_restart`
+   * can be called while `launchDaemon` is still awaiting the outer
+   * `xedit-client.ps1 process launch` invocation (state "starting", `daemonRef`
+   * still null) - without this, that call has nothing to cancel: the spawned
+   * pwsh child keeps running orphaned indefinitely even after the MCP-level
+   * state is cleared (observed directly: two `xedit-client.ps1 process launch`
+   * processes still alive 11+ minutes after `xedit_stop` reported success).
+   * When provided and the signal aborts, the current `runPwshCapture` child is
+   * killed immediately and `launchDaemon` rejects with an abort error.
+   */
+  signal?: AbortSignal;
 }
 
 export interface LaunchedDaemon {
@@ -204,7 +216,7 @@ export async function launchDaemon(opts: LaunchOptions): Promise<LaunchedDaemon>
     if (opts.starfieldRedPill === false) {
       launchArgs.push("--no-starfield-redpill", "1");
     }
-    const launchOut = await runPwshCapture(pwsh, launchArgs);
+    const launchOut = await runPwshCapture(pwsh, launchArgs, undefined, opts.signal);
 
     pid = parseLaunchPid(launchOut);
     if (!pid) {
@@ -216,6 +228,7 @@ export async function launchDaemon(opts: LaunchOptions): Promise<LaunchedDaemon>
     let dwReady = false;
     let lastWaitErr: unknown;
     while (Date.now() < deadline) {
+      if (opts.signal?.aborted) throw new LaunchAbortedError();
       try {
         const waitOut = await runPwshCapture(pwsh, [
           "-NoProfile",
@@ -227,13 +240,14 @@ export async function launchDaemon(opts: LaunchOptions): Promise<LaunchedDaemon>
           String(launchedPid),
           "--timeout-seconds",
           "1",
-        ]);
+        ], undefined, opts.signal);
         if (!/^status:\s*exited\s*$/im.test(waitOut)) {
           dwReady = true;
           break;
         }
         lastWaitErr = new Error(`Daemon exited before readiness confirmation: ${waitOut.slice(0, 400)}`);
       } catch (err) {
+        if (err instanceof LaunchAbortedError) throw err;
         lastWaitErr = err;
       }
       await sleep(750);
@@ -254,6 +268,7 @@ export async function launchDaemon(opts: LaunchOptions): Promise<LaunchedDaemon>
     // xEdit may serve the pipe before plugin load completes; this guards against the race.
     let lastFilesCount = 0;
     while (Date.now() < deadline) {
+      if (opts.signal?.aborted) throw new LaunchAbortedError();
       try {
         const res = await adapter.call({ command: "files.list", args: {} });
         if (res.ok) {
@@ -338,8 +353,24 @@ function managedProcessIdentityProbeArgs(pid: number, launcherPath: string): str
   return ["-NoProfile", "-NonInteractive", "-EncodedCommand", encoded];
 }
 
-function runPwshCapture(pwsh: string, args: string[], timeoutMs?: number): Promise<string> {
+export class LaunchAbortedError extends Error {
+  constructor(message = "Launch aborted") {
+    super(message);
+    this.name = "LaunchAbortedError";
+  }
+}
+
+function runPwshCapture(
+  pwsh: string,
+  args: string[],
+  timeoutMs?: number,
+  signal?: AbortSignal,
+): Promise<string> {
   return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new LaunchAbortedError());
+      return;
+    }
     const child = spawn(pwsh, args, { stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
@@ -352,10 +383,26 @@ function runPwshCapture(pwsh: string, args: string[], timeoutMs?: number): Promi
           child.kill();
           reject(new Error(`PowerShell command timed out after ${timeoutMs} ms`));
         }, timeoutMs);
+    const onAbort = () => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      // Best-effort: also ask the process tree to die, not just this node.
+      // The spawned pwsh may itself have spawned xEdit/wrapper children (the
+      // exact orphaning shape this signal exists to prevent).
+      try {
+        child.kill();
+      } catch {
+        /* best effort */
+      }
+      reject(new LaunchAbortedError());
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
     const finish = <T>(callback: (value: T) => void, value: T) => {
       if (settled) return;
       settled = true;
       if (timer) clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
       callback(value);
     };
     child.stdout.on("data", (d) => (stdout += d.toString()));

@@ -790,6 +790,13 @@ export async function main(): Promise<void> {
   let toolset: ServerToolset | null = null;
   let daemonRef: LaunchedDaemon | null = null;
   let launchGeneration = 0;
+  // Tracks the in-flight launch (state "starting") so xedit_stop/xedit_restart
+  // can actually cancel it. Before this existed, stopping mid-launch only
+  // cleared MCP-side state - daemonRef was still null at that point (it's set
+  // after launchDaemon resolves), so there was nothing for `current.stop()` to
+  // act on and the spawned `xedit-client.ps1 process launch` child (and
+  // anything it had already spawned) kept running orphaned indefinitely.
+  let launchAbortController: AbortController | null = null;
   const pendingSaveTracker = new PendingSaveTracker();
   let lastFlush: FlushSummary | undefined;
   const audit = createAuditLogger({ baseDir: join(tmpdir(), "xedit-mcp-audit") });
@@ -799,6 +806,17 @@ export async function main(): Promise<void> {
     state = next;
     toolset = null;
     daemonRef = null;
+    // Cancel an in-flight launch, if any - without this, stopping while
+    // state.status is "starting" (daemonRef still null, launchDaemon() not
+    // yet resolved) had nothing to act on: the launchGeneration bump above
+    // only gets checked AFTER launchDaemon() resolves, so a launch stuck
+    // earlier than that (e.g. inside the outer `process launch` invocation)
+    // just kept running orphaned. See launchAbortController's declaration
+    // comment for the directly-observed symptom this fixes.
+    if (launchAbortController) {
+      launchAbortController.abort();
+      launchAbortController = null;
+    }
     pendingSaveTracker.clearForSessionTransition();
   }
 
@@ -901,12 +919,14 @@ export async function main(): Promise<void> {
 
     const launchGen = ++launchGeneration;
     state = { status: "starting", startedAt: Date.now() };
+    const abortController = new AbortController();
+    launchAbortController = abortController;
 
     // Fire-and-forget: this promise resolves in the background while tool calls
     // return immediately. State is mutated in the closures below.
     void (async () => {
       try {
-        const daemon = await launchDaemon(opts);
+        const daemon = await launchDaemon({ ...opts, signal: abortController.signal });
         if (launchGen !== launchGeneration) {
           try {
             await daemon.stop();
@@ -932,6 +952,10 @@ export async function main(): Promise<void> {
         state = { status: "failed", error: msg, at: Date.now() };
         daemonRef = null;
         toolset = null;
+      } finally {
+        if (launchAbortController === abortController) {
+          launchAbortController = null;
+        }
       }
     })();
 
