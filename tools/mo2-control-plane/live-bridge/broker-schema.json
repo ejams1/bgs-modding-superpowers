@@ -28,7 +28,8 @@
           "required": ["code", "message"],
           "properties": {
             "code": {"$ref": "#/definitions/errorCode"},
-            "message": {"type": "string"}
+            "message": {"type": "string"},
+            "details": {"type": "object"}
           },
           "additionalProperties": false
         }
@@ -45,10 +46,12 @@
         "internal_error",
         "mod_not_found",
         "priority_out_of_range",
+        "priority_not_applied",
         "plugin_not_found",
         "refresh_timeout",
         "main_thread_unavailable",
-        "mo2_shutting_down"
+        "mo2_shutting_down",
+        "mod_dir_exists_unregistered"
       ]
     }
   }

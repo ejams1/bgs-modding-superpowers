@@ -64,6 +64,11 @@ class ErrorCode:
     REFRESH_TIMEOUT = "refresh_timeout"
     MAIN_THREAD_UNAVAILABLE = "main_thread_unavailable"
     MO2_SHUTTING_DOWN = "mo2_shutting_down"
+    # A folder already exists under mods/ but is not registered in MO2's mod
+    # list. Distinct from INVALID_PARAMS so callers can branch on the code
+    # instead of string-matching the message; see mods.create's adopt_existing
+    # escape hatch (docs/internal/reviews/2026-09-14-inherited-project-review.md U12).
+    MOD_DIR_EXISTS_UNREGISTERED = "mod_dir_exists_unregistered"
 
 
 # Post-response hook registry (FIFO; fires after pipe response is written + flushed,
@@ -1218,6 +1223,131 @@ def _handle_mods_remove(organizer, pump, payload):
     return {"ok": True, "result": outcome[1], "error": None}
 
 
+class _ModsDirCheckFailed(Exception):
+    """organizer.modsPath() could not be read.
+
+    Callers MUST treat this as "cannot verify, refuse the call" rather than
+    "no such directory, proceed to createMod": a false negative here is
+    exactly the modal-hang bug _existing_unregistered_mod_dir exists to
+    prevent (docs/internal/reviews/2026-09-14-inherited-project-review.md U3).
+    """
+
+
+def _existing_unregistered_mod_dir(organizer, sanitized_name):
+    """Detect an on-disk mods/<name> folder MO2 has not registered yet.
+
+    Shared by every createMod call site (mods.create,
+    installation.create_mod_from_directory) so a folder dropped into mods/ by
+    hand, or by a tool that bypassed MO2, is caught before organizer.createMod()
+    opens MO2's blocking "Mod Exists" modal on the main thread
+    (docs/internal/reviews/2026-09-14-inherited-project-review.md U1, U15).
+
+    NTFS directory lookups are case-insensitive but MO2's ModInfo::s_ModsByName
+    map is not, so this resolves the request to the folder's actual on-disk
+    casing via a case-folded directory listing rather than a single
+    os.path.isdir(mods_path/name) check -- an os.path.isdir on a mismatched
+    case would report "exists" while a later organizer.modList().getMod(name)
+    call, using the *requested* case, would still miss (U6).
+
+    Returns (absolute_path, canonical_name) if a matching directory exists,
+    else None.
+
+    Raises _ModsDirCheckFailed if organizer.modsPath() is unavailable, raises,
+    or the mods directory cannot be listed.
+    """
+
+    mods_path_fn = getattr(organizer, "modsPath", None)
+    if not callable(mods_path_fn):
+        raise _ModsDirCheckFailed("organizer.modsPath is unavailable")
+    try:
+        mods_path = str(mods_path_fn())
+    except Exception as exc:
+        raise _ModsDirCheckFailed(f"organizer.modsPath() raised: {exc}") from exc
+
+    try:
+        entries = os.listdir(mods_path)
+    except OSError as exc:
+        raise _ModsDirCheckFailed(f"os.listdir({mods_path!r}) raised: {exc}") from exc
+
+    target_cf = sanitized_name.casefold()
+    for entry in entries:
+        if entry.casefold() != target_cf:
+            continue
+        full = os.path.join(mods_path, entry)
+        if os.path.isdir(full):
+            return (full, entry)
+    return None
+
+
+def _refresh_or_internal_error(organizer, context: str):
+    """Run organizer.refresh(), reporting a failure as INTERNAL_ERROR.
+
+    refresh() is load-bearing for mods.create's create and adopt branches:
+    the getMod/priority reads immediately after it depend on the refreshed
+    model. Left unguarded, a raised exception propagates out of
+    _on_main_thread into pump.invoke_blocking's own try/except, which reports
+    MAIN_THREAD_UNAVAILABLE -- the code reserved for a genuinely blocked pump,
+    not a refresh that raised and left the caller unable to tell the two
+    apart (docs/internal/reviews/2026-09-14-inherited-project-review.md U13).
+
+    Returns None on success, or an ("error", ...) outcome tuple to return
+    from _on_main_thread immediately.
+    """
+
+    try:
+        organizer.refresh()
+        return None
+    except Exception as exc:
+        return (
+            "error",
+            ErrorCode.INTERNAL_ERROR,
+            f"organizer.refresh() failed while {context}: {exc}",
+        )
+
+
+def _mods_create_or_adopt_result(mod_list, name, absolute_path, created, adopted, target_priority):
+    """Shared result/priority tail for mods.create's create and adopt branches.
+
+    Previously two 12-line copies that had to be edited in lockstep
+    (docs/internal/reviews/2026-09-14-inherited-project-review.md U15).
+
+    Mirrors _handle_mods_set_priority's readback contract: a requested
+    priority that setPriority silently rejects is reported as an error
+    (PRIORITY_NOT_APPLIED) rather than folded into a success response
+    carrying the wrong priority (U8).
+    """
+
+    result = {
+        "name": name,
+        "created": created,
+        "adopted": adopted,
+        "priority": mod_list.priority(name),
+        "absolute_path": absolute_path,
+    }
+    if target_priority is None:
+        return ("ok", result)
+
+    mod_list.setPriority(name, target_priority)
+    actual = mod_list.priority(name)
+    result["priority"] = actual
+    result["requested_priority"] = target_priority
+    if actual != target_priority:
+        return (
+            "error",
+            ErrorCode.PRIORITY_NOT_APPLIED,
+            f"priority {target_priority} was not applied for mod '{name}' (final {actual})",
+            {
+                "name": name,
+                "created": created,
+                "adopted": adopted,
+                "absolute_path": absolute_path,
+                "requested_priority": target_priority,
+                "final_priority": actual,
+            },
+        )
+    return ("ok", result)
+
+
 def _handle_mods_create(organizer, pump, payload):
     """Create an empty mod via createMod + optional setPriority + notification.
 
@@ -1270,47 +1400,66 @@ def _handle_mods_create(organizer, pump, payload):
         # and organizer.createMod() then opens MO2's modal "Mod Exists" dialog
         # on the main thread. That modal's nested event loop blocks this pump
         # turn, the client's pipe call times out, and the GUI sits on the
-        # prompt until a human dismisses it. Detect the folder first and never
-        # reach createMod for it.
-        mods_path_fn = getattr(organizer, "modsPath", None)
-        existing_dir = None
-        if callable(mods_path_fn):
-            try:
-                candidate = os.path.join(str(mods_path_fn()), sanitized_name)
-            except Exception:
-                candidate = None
-            if candidate and os.path.isdir(candidate):
-                existing_dir = candidate
-        if existing_dir is not None:
+        # prompt until a human dismisses it. Detect the folder first (failing
+        # closed if we cannot check) and never reach createMod for it.
+        try:
+            existing = _existing_unregistered_mod_dir(organizer, sanitized_name)
+        except _ModsDirCheckFailed as exc:
+            return (
+                "error",
+                ErrorCode.INTERNAL_ERROR,
+                f"cannot verify mods directory before createMod: {exc}",
+            )
+
+        if existing is not None:
+            existing_dir, canonical_name = existing
             if not adopt_existing:
                 return (
                     "error",
-                    ErrorCode.INVALID_PARAMS,
+                    ErrorCode.MOD_DIR_EXISTS_UNREGISTERED,
                     f"mod folder already exists on disk but is not registered: {existing_dir}. "
                     "createMod would open MO2's 'Mod Exists' dialog and block the broker; "
                     "pass adopt_existing=true to register the existing folder as-is instead",
+                    {"existing_dir": existing_dir, "name": canonical_name},
                 )
             # MO2 registers unregistered folders under mods/ on refresh (the
-            # same thing the GUI's F5 does), without any prompt.
-            organizer.refresh()
-            adopted = organizer.modList().getMod(sanitized_name)
-            if adopted is None:
-                return ("error", ErrorCode.INTERNAL_ERROR, f"refresh did not register existing folder {existing_dir}")
-            adopted_name = adopted.name()
+            # same thing the GUI's F5 does), without any prompt. Use the
+            # on-disk canonical name for the readback -- MO2's mod-name map is
+            # case-sensitive, so re-using the (possibly differently-cased)
+            # request name here would miss even a freshly-registered mod.
+            refresh_error = _refresh_or_internal_error(organizer, "adopting existing folder")
+            if refresh_error is not None:
+                return refresh_error
             refreshed_list = organizer.modList()
-            result = {
-                "name": adopted_name,
-                "created": False,
-                "adopted": True,
-                "priority": refreshed_list.priority(adopted_name),
-                "absolute_path": adopted.absolutePath(),
-            }
-            if target_priority is not None:
-                refreshed_list.setPriority(adopted_name, target_priority)
-                result["priority"] = refreshed_list.priority(adopted_name)
-                result["requested_priority"] = target_priority
+            adopted = refreshed_list.getMod(canonical_name)
+            if adopted is None:
+                return (
+                    "error",
+                    ErrorCode.INTERNAL_ERROR,
+                    f"refresh did not register existing folder {existing_dir}",
+                )
             organizer.modDataChanged(adopted)
-            return ("ok", result)
+            return _mods_create_or_adopt_result(
+                refreshed_list,
+                adopted.name(),
+                adopted.absolutePath(),
+                created=False,
+                adopted=True,
+                target_priority=target_priority,
+            )
+
+        if adopt_existing:
+            # adopt_existing was set but there is nothing on disk to adopt.
+            # Falling through to createMod here would silently create a
+            # brand-new empty mod under a name the caller believed already
+            # existed (e.g. a typo), with created=true/adopted=false and no
+            # signal that the adoption they actually asked for never happened
+            # (docs/internal/reviews/2026-09-14-inherited-project-review.md U7).
+            return (
+                "error",
+                ErrorCode.INVALID_PARAMS,
+                f"adopt_existing=true but no folder named '{sanitized_name}' exists under mods/",
+            )
 
         new_mod = organizer.createMod(GuessedString(sanitized_name))
         if new_mod is None:
@@ -1333,21 +1482,22 @@ def _handle_mods_create(organizer, pump, payload):
         # same main-thread turn* so ModInfo::s_ModsByName is rebuilt before the
         # next broker call tries modList().getMod(name). Doing this as a second
         # IPC round-trip from TS left room for Qt delayed writes and model drift.
-        organizer.refresh()
-
-        result = {
-            "name": actual_name,
-            "created": True,
-            "priority": mod_list.priority(actual_name),
-            "absolute_path": absolute_path,
-        }
-        if target_priority is not None:
-            mod_list.setPriority(actual_name, target_priority)
-            result["priority"] = mod_list.priority(actual_name)
-            result["requested_priority"] = target_priority
+        refresh_error = _refresh_or_internal_error(organizer, "creating a new mod")
+        if refresh_error is not None:
+            return refresh_error
+        # Re-fetch modList() post-refresh rather than reuse the pre-refresh
+        # handle, matching the adopt branch above -- see U15.
+        refreshed_list = organizer.modList()
 
         organizer.modDataChanged(new_mod)
-        return ("ok", result)
+        return _mods_create_or_adopt_result(
+            refreshed_list,
+            actual_name,
+            absolute_path,
+            created=True,
+            adopted=False,
+            target_priority=target_priority,
+        )
 
     try:
         outcome = pump.invoke_blocking(_on_main_thread, timeout_s=15)
@@ -1359,10 +1509,13 @@ def _handle_mods_create(organizer, pump, payload):
         }
 
     if outcome[0] == "error":
+        error = {"code": outcome[1], "message": outcome[2]}
+        if len(outcome) > 3:
+            error["details"] = outcome[3]
         return {
             "ok": False,
             "result": None,
-            "error": {"code": outcome[1], "message": outcome[2]},
+            "error": error,
         }
 
     return {"ok": True, "result": outcome[1], "error": None}
@@ -2242,6 +2395,32 @@ def _handle_installation_create_mod_from_directory(organizer, pump, payload):
             return ("error", ErrorCode.INVALID_PARAMS, f"name '{sanitized}' already exists")
         if GuessedString is None:
             return ("error", ErrorCode.INTERNAL_ERROR, "mobase.GuessedString unavailable")
+
+        # Same guard as mods.create (U1): never let an unregistered folder
+        # under mods/ reach createMod, which would open MO2's blocking
+        # "Mod Exists" modal. Pattern A staging always wants a fresh empty
+        # mod, so unlike mods.create there is no adopt_existing escape hatch
+        # here -- on a collision this refuses and lets the caller
+        # (mo2-install.ts) decide whether to retry under a different name or
+        # investigate what raced it.
+        try:
+            existing = _existing_unregistered_mod_dir(organizer, sanitized)
+        except _ModsDirCheckFailed as exc:
+            return (
+                "error",
+                ErrorCode.INTERNAL_ERROR,
+                f"cannot verify mods directory before createMod: {exc}",
+            )
+        if existing is not None:
+            existing_dir, canonical_name = existing
+            return (
+                "error",
+                ErrorCode.MOD_DIR_EXISTS_UNREGISTERED,
+                f"mod folder already exists on disk but is not registered: {existing_dir}. "
+                "createMod would open MO2's 'Mod Exists' dialog and block the broker.",
+                {"existing_dir": existing_dir, "name": canonical_name},
+            )
+
         new_mod = organizer.createMod(GuessedString(sanitized))
         if new_mod is None:
             return ("error", ErrorCode.INTERNAL_ERROR, "createMod returned None")
@@ -2250,7 +2429,9 @@ def _handle_installation_create_mod_from_directory(organizer, pump, payload):
             os.makedirs(absolute_path, exist_ok=True)
         except OSError:
             pass
-        organizer.refresh()
+        refresh_error = _refresh_or_internal_error(organizer, "creating a new mod")
+        if refresh_error is not None:
+            return refresh_error
         return (
             "ok",
             {
@@ -2269,10 +2450,13 @@ def _handle_installation_create_mod_from_directory(organizer, pump, payload):
         }
 
     if outcome[0] == "error":
+        error = {"code": outcome[1], "message": outcome[2]}
+        if len(outcome) > 3:
+            error["details"] = outcome[3]
         return {
             "ok": False,
             "result": None,
-            "error": {"code": outcome[1], "message": outcome[2]},
+            "error": error,
         }
     return {"ok": True, "result": outcome[1], "error": None}
 

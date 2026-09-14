@@ -150,6 +150,12 @@ $summary = (($output | ForEach-Object { $_.ToString() }) -join "`n") | ConvertFr
 if ($summary.refused.response.ok) {
     throw "mods.create on an existing unregistered folder should be refused, not routed to createMod"
 }
+if ($summary.refused.response.error.code -ne "mod_dir_exists_unregistered") {
+    # U12: this refusal gets its own code so callers can branch on it instead
+    # of string-matching the message (which the two checks below still do,
+    # for readability -- but the code is now the load-bearing contract).
+    throw "Refusal should use the dedicated mod_dir_exists_unregistered code, got: $($summary.refused.response.error.code)"
+}
 if ($summary.refused.response.error.message -notmatch "Mod Exists") {
     throw "Refusal should explain the modal it is avoiding: $($summary.refused.response.error.message)"
 }

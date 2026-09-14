@@ -520,6 +520,7 @@ def test_mods_create_basic(monkeypatch, tmp_path):
     mod_list.priority.return_value = 5
     organizer = MagicMock()
     organizer.modList.return_value = mod_list
+    organizer.modsPath.return_value = str(tmp_path)
     organizer.createMod.return_value = new_mod
 
     pump = MagicMock()
@@ -538,7 +539,7 @@ def test_mods_create_basic(monkeypatch, tmp_path):
     organizer.refresh.assert_called_once_with()
 
 
-def test_mods_create_with_target_priority(monkeypatch):
+def test_mods_create_with_target_priority(monkeypatch, tmp_path):
     bridge = _load_bridge(monkeypatch)
 
     new_mod = MagicMock()
@@ -555,6 +556,7 @@ def test_mods_create_with_target_priority(monkeypatch):
 
     organizer = MagicMock()
     organizer.modList.return_value = mod_list
+    organizer.modsPath.return_value = str(tmp_path)
     organizer.createMod.return_value = new_mod
 
     pump = MagicMock()
@@ -589,7 +591,7 @@ def test_mods_create_name_collision(monkeypatch):
     assert "exists" in result["error"]["message"].lower()
 
 
-def test_mods_create_sanitizes_name(monkeypatch):
+def test_mods_create_sanitizes_name(monkeypatch, tmp_path):
     bridge = _load_bridge(monkeypatch)
 
     captured = {}
@@ -600,6 +602,7 @@ def test_mods_create_sanitizes_name(monkeypatch):
     mod_list.priority.return_value = 0
     organizer = MagicMock()
     organizer.modList.return_value = mod_list
+    organizer.modsPath.return_value = str(tmp_path)
 
     def _create(guessed_string):
         captured["name"] = guessed_string
@@ -617,7 +620,7 @@ def test_mods_create_sanitizes_name(monkeypatch):
     assert captured["name"] == "BadName"
 
 
-def test_mods_create_returns_internal_error_on_none(monkeypatch):
+def test_mods_create_returns_internal_error_on_none(monkeypatch, tmp_path):
     """createMod returned None (e.g., MO2 internal failure)."""
     bridge = _load_bridge(monkeypatch)
 
@@ -625,6 +628,7 @@ def test_mods_create_returns_internal_error_on_none(monkeypatch):
     mod_list.getMod.return_value = None
     organizer = MagicMock()
     organizer.modList.return_value = mod_list
+    organizer.modsPath.return_value = str(tmp_path)
     organizer.createMod.return_value = None
 
     pump = MagicMock()
@@ -635,6 +639,194 @@ def test_mods_create_returns_internal_error_on_none(monkeypatch):
 
     assert result["ok"] is False
     assert result["error"]["code"] == "internal_error"
+    organizer.createMod.assert_called_once()
+
+
+def test_mods_create_fails_closed_when_mods_path_unreadable(monkeypatch):
+    """U3: organizer.modsPath() raising must refuse, not fall through to
+    createMod. A bare, unconfigured MagicMock().modsPath() reproduces this --
+    it returns a MagicMock whose str() is not a real path, so os.listdir on it
+    raises. createMod must never be reached."""
+    bridge = _load_bridge(monkeypatch)
+
+    mod_list = MagicMock()
+    mod_list.getMod.return_value = None
+    organizer = MagicMock()
+    organizer.modList.return_value = mod_list
+    # organizer.modsPath deliberately left unconfigured: MagicMock()'s default
+    # auto-attribute is callable and returns another MagicMock whose str() is
+    # not a real filesystem path.
+
+    pump = MagicMock()
+    pump.invoke_blocking.side_effect = lambda fn, timeout_s=15: fn()
+    monkeypatch.setattr(bridge, "GuessedString", lambda name: name, raising=False)
+
+    result = bridge._handle_mods_create(organizer, pump, {"name": "Whatever"})
+
+    assert result["ok"] is False
+    assert result["error"]["code"] == "internal_error"
+    organizer.createMod.assert_not_called()
+
+
+def test_mods_create_existing_folder_without_adopt_is_refused_with_dedicated_code(monkeypatch, tmp_path):
+    """U12: the recoverable 'retry with adopt_existing' refusal gets its own
+    error code, not the generic invalid_params every type error also uses."""
+    bridge = _load_bridge(monkeypatch)
+
+    (tmp_path / "DroppedInByHand").mkdir()
+    mod_list = MagicMock()
+    mod_list.getMod.return_value = None
+    organizer = MagicMock()
+    organizer.modList.return_value = mod_list
+    organizer.modsPath.return_value = str(tmp_path)
+
+    pump = MagicMock()
+    pump.invoke_blocking.side_effect = lambda fn, timeout_s=15: fn()
+    monkeypatch.setattr(bridge, "GuessedString", lambda name: name, raising=False)
+
+    result = bridge._handle_mods_create(organizer, pump, {"name": "DroppedInByHand"})
+
+    assert result["ok"] is False
+    assert result["error"]["code"] == "mod_dir_exists_unregistered"
+    assert result["error"]["details"]["existing_dir"] == str(tmp_path / "DroppedInByHand")
+    assert result["error"]["details"]["name"] == "DroppedInByHand"
+    organizer.createMod.assert_not_called()
+
+
+def test_mods_create_adopt_existing_resolves_ntfs_case_mismatch(monkeypatch, tmp_path):
+    """U6: NTFS directory lookups are case-insensitive; MO2's mod-name map is
+    not. adopt_existing must resolve the request to the folder's actual
+    on-disk casing and use *that* name for the post-refresh getMod readback,
+    or a case-mismatched request always reports 'refresh did not register'
+    even though the folder (and, if already registered, the mod) is right
+    there."""
+    bridge = _load_bridge(monkeypatch)
+
+    (tmp_path / "MyMod").mkdir()
+    adopted_mod = MagicMock()
+    adopted_mod.name.return_value = "MyMod"
+    adopted_mod.absolutePath.return_value = str(tmp_path / "MyMod")
+
+    mod_list = MagicMock()
+    # Pre-refresh: nothing registered under any casing.
+    mod_list.getMod.return_value = None
+
+    refreshed_list = MagicMock()
+    # Post-refresh: MO2 registered it under its real on-disk casing, "MyMod" --
+    # a lookup using the request's casing ("mymod") must still miss.
+    refreshed_list.getMod.side_effect = lambda name: adopted_mod if name == "MyMod" else None
+    refreshed_list.priority.return_value = 7
+
+    organizer = MagicMock()
+    organizer.modList.side_effect = [mod_list, refreshed_list]
+    organizer.modsPath.return_value = str(tmp_path)
+
+    pump = MagicMock()
+    pump.invoke_blocking.side_effect = lambda fn, timeout_s=15: fn()
+    monkeypatch.setattr(bridge, "GuessedString", lambda name: name, raising=False)
+
+    result = bridge._handle_mods_create(
+        organizer, pump, {"name": "mymod", "adopt_existing": True}
+    )
+
+    assert result["ok"] is True
+    assert result["result"]["name"] == "MyMod"
+    assert result["result"]["adopted"] is True
+    assert result["result"]["created"] is False
+    organizer.createMod.assert_not_called()
+
+
+def test_mods_create_adopt_existing_without_folder_is_refused(monkeypatch, tmp_path):
+    """U7: adopt_existing=true with nothing on disk to adopt must refuse, not
+    silently fall through to createMod and mint a brand-new empty mod under a
+    name the caller believed already existed (e.g. a typo)."""
+    bridge = _load_bridge(monkeypatch)
+
+    mod_list = MagicMock()
+    mod_list.getMod.return_value = None
+    organizer = MagicMock()
+    organizer.modList.return_value = mod_list
+    organizer.modsPath.return_value = str(tmp_path)  # empty: nothing to adopt
+
+    pump = MagicMock()
+    pump.invoke_blocking.side_effect = lambda fn, timeout_s=15: fn()
+    monkeypatch.setattr(bridge, "GuessedString", lambda name: name, raising=False)
+
+    result = bridge._handle_mods_create(
+        organizer, pump, {"name": "DropedInByHand", "adopt_existing": True}
+    )
+
+    assert result["ok"] is False
+    assert result["error"]["code"] == "invalid_params"
+    organizer.createMod.assert_not_called()
+
+
+def test_mods_create_adopt_existing_reports_priority_not_applied(monkeypatch, tmp_path):
+    """U8: the adopt branch must read setPriority's effect back and report
+    PRIORITY_NOT_APPLIED like _handle_mods_set_priority does, not return
+    ok:true with a priority that silently differs from what was requested."""
+    bridge = _load_bridge(monkeypatch)
+
+    (tmp_path / "DroppedInByHand").mkdir()
+    adopted_mod = MagicMock()
+    adopted_mod.name.return_value = "DroppedInByHand"
+    adopted_mod.absolutePath.return_value = str(tmp_path / "DroppedInByHand")
+
+    mod_list = MagicMock()
+    mod_list.getMod.return_value = None
+
+    refreshed_list = MagicMock()
+    refreshed_list.getMod.return_value = adopted_mod
+    # setPriority is a no-op here: readback never reflects the request.
+    refreshed_list.priority.return_value = 7
+
+    organizer = MagicMock()
+    organizer.modList.side_effect = [mod_list, refreshed_list]
+    organizer.modsPath.return_value = str(tmp_path)
+
+    pump = MagicMock()
+    pump.invoke_blocking.side_effect = lambda fn, timeout_s=15: fn()
+    monkeypatch.setattr(bridge, "GuessedString", lambda name: name, raising=False)
+
+    result = bridge._handle_mods_create(
+        organizer,
+        pump,
+        {"name": "DroppedInByHand", "adopt_existing": True, "priority": 3},
+    )
+
+    assert result["ok"] is False
+    assert result["error"]["code"] == "priority_not_applied"
+    assert result["error"]["details"]["requested_priority"] == 3
+    assert result["error"]["details"]["final_priority"] == 7
+    assert result["error"]["details"]["adopted"] is True
+
+
+def test_mods_create_adopt_existing_reports_internal_error_when_refresh_raises(monkeypatch, tmp_path):
+    """U13: organizer.refresh() raising during the adopt branch must be
+    reported as INTERNAL_ERROR, not left to propagate out of _on_main_thread
+    into pump.invoke_blocking's own try/except -- which would misreport it as
+    MAIN_THREAD_UNAVAILABLE, the code reserved for a genuinely blocked pump."""
+    bridge = _load_bridge(monkeypatch)
+
+    (tmp_path / "DroppedInByHand").mkdir()
+    mod_list = MagicMock()
+    mod_list.getMod.return_value = None
+    organizer = MagicMock()
+    organizer.modList.return_value = mod_list
+    organizer.modsPath.return_value = str(tmp_path)
+    organizer.refresh.side_effect = RuntimeError("boom")
+
+    pump = MagicMock()
+    pump.invoke_blocking.side_effect = lambda fn, timeout_s=15: fn()
+    monkeypatch.setattr(bridge, "GuessedString", lambda name: name, raising=False)
+
+    result = bridge._handle_mods_create(
+        organizer, pump, {"name": "DroppedInByHand", "adopt_existing": True}
+    )
+
+    assert result["ok"] is False
+    assert result["error"]["code"] == "internal_error"
+    assert "refresh" in result["error"]["message"].lower()
 
 
 def test_mods_meta_read_existing(monkeypatch, tmp_path):
