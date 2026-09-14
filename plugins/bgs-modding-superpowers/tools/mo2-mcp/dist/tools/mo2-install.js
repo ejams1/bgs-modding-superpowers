@@ -325,6 +325,16 @@ const handler = {
         // destination directory creation and keeps the clobber guard before rename.
         let finalDestPath = destPath;
         if (bound.pipeClient) {
+            // Re-check for the TOCTOU race between plan and apply (U1): a folder
+            // matching modName can appear on disk in the gap (lease/staging delay,
+            // concurrent tooling, hand-dropped folder) after buildPlan's existsSync
+            // guard already passed. Catching it here client-side, with the same
+            // error shape the offline branch and buildPlan already use, avoids
+            // making the broker call at all -- the bridge's own guard is a second
+            // line of defense, not the first.
+            if (existsSync(destPath)) {
+                throw new Error(`mod_name_exists: ${modName}`);
+            }
             const resp = await bound.pipeClient.call("installation.create_mod_from_directory", {
                 name: modName,
                 source_dir: stagingDir,

@@ -1,5 +1,5 @@
 import type { ToolContext } from "../types.js";
-import { resolveProfileDir } from "../path-helpers.js";
+import { resolveProfileDir, resolveProfileName } from "../path-helpers.js";
 import { requireBoundContext, bindingSnapshot } from "../binding.js";
 
 /**
@@ -15,11 +15,16 @@ import { requireBoundContext, bindingSnapshot } from "../binding.js";
  */
 export async function invalidateWorld(
   ctx: ToolContext,
-  profiles: string[] = ["Default"],
+  profiles?: string[],
 ): Promise<void> {
   const sidecar = requireBoundContext(ctx).sidecar;
   if (!sidecar) return;
-  for (const profile of Array.from(new Set(profiles))) {
+  // No explicit profiles means "whatever this session is bound to". Callers
+  // that computed a list of touched profiles pass it through; an empty list
+  // means the mutation touched none by name, which still has to invalidate the
+  // bound profile's World cache.
+  const targets = profiles?.length ? profiles : [resolveProfileName(ctx)];
+  for (const profile of Array.from(new Set(targets))) {
     await sidecar.call("world.invalidate", { profile_dir: resolveProfileDir(ctx, profile) });
   }
 }

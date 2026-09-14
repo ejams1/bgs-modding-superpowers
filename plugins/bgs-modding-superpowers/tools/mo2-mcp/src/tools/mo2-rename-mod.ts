@@ -113,7 +113,7 @@ const handler: PlanApplyHandler = {
     }
 
     if (bound.pipeClient) {
-      await invalidateWorld(ctx, updated.length ? updated : ["Default"]);
+      await invalidateWorld(ctx, updated);
     }
     await logApplyEvent(
       handler.toolName,

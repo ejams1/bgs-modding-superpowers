@@ -10,9 +10,10 @@ import { join } from "node:path";
 import { registerTool } from "../tool-registry.js";
 import { readMoIni } from "../mo-ini.js";
 import { requireBoundContext, bindingSnapshot } from "../binding.js";
+import { resolveProfileName } from "../path-helpers.js";
 
 const inputSchema = z.object({
-  profile: z.string().default("Default"),
+  profile: z.string().optional(),
   ini_name: z.enum(["game", "prefs", "custom"]),
   section: z.string().optional(),
   key: z.string().optional(),
@@ -121,7 +122,7 @@ registerTool({
   inputSchema,
   handler: async (args, ctx) => {
     const bound = requireBoundContext(ctx);
-    const profile = (args.profile as string) ?? "Default";
+    const profile = resolveProfileName(ctx, args.profile as string | undefined);
     const iniName = args.ini_name as "game" | "prefs" | "custom";
     const ini = await readMoIni(join(bound.config.mo2Root, "ModOrganizer.ini"));
     const game = await resolveGameIniBase({ mo2Root: bound.config.mo2Root, profile, ini });

@@ -65,6 +65,7 @@ import {
   reportForMod,
 } from "../conflict-preview.js";
 import { logApplyEvent } from "../log-apply.js";
+import { resolveProfileName } from "../path-helpers.js";
 
 // BUG-10 fix (2026-06-17): FOMOD page/group/option names + mod name + plan_id
 // + lease_token all gain .min(1) so empty strings fail Zod safeParse instead
@@ -187,7 +188,7 @@ async function _registerReinstalledPlugins(
   modPath: string,
 ): Promise<string[]> {
   const bound = requireBoundContext(ctx);
-  const profile = bound.config.allowedProfiles[0] ?? "Default";
+  const profile = resolveProfileName(ctx);
   const pluginsTxtPath = path.join(bound.config.mo2Root, "profiles", profile, "plugins.txt");
   const pluginsRegistered = await registerPluginsInPluginsTxt(modPath, pluginsTxtPath);
   if (pluginsRegistered.length > 0 && bound.pipeClient) {
@@ -220,7 +221,7 @@ const handler: PlanApplyHandler = {
       // per-page / per-option dependencies_status. Reinstall always uses the
       // first allowed profile (the live broker's active profile); we don't
       // accept an explicit profile arg here, so fall back to allowedProfiles[0].
-      const profile = bound.config.allowedProfiles[0] ?? "Default";
+      const profile = resolveProfileName(ctx);
       const mo2State = await gatherMo2FomodState(ctx, profile);
       const detection = await detectFomod(
         bound.sidecar,
@@ -249,7 +250,7 @@ const handler: PlanApplyHandler = {
     const pipeClient = bound.pipeClient;
     if (!pipeClient) throw new Error("live_mo2_required_for_reinstall");
     const name = plan.args.name as string;
-    const profile = bound.config.allowedProfiles[0] ?? "Default";
+    const profile = resolveProfileName(ctx);
     const { installFile, archivePath, modPath } = await _readInstallSource(plan.args, ctx);
     const preReport = bound.sidecar
       ? await previewOrUnavailable(() => reportForMod(name, bound, profile))

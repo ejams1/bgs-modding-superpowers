@@ -20,6 +20,7 @@ import { makeCallHandler } from "./tools/call.js";
 import { refuse } from "./envelope.js";
 import { MCP_ERROR_CODES } from "./types.js";
 import { launchDaemon } from "./launch.js";
+import { resolveMo2DataPath } from "./mo2-ini.js";
 import { PendingSaveTracker, dirtyFileNames, pendingSaveLifecycleRisk, refreshPendingSaveAuthority, withPendingShutdownSave, } from "./pending-save.js";
 import { hashArgs } from "./audit-line.js";
 import { makeFlushHandler, retryFailedFlushExit } from "./flush.js";
@@ -113,7 +114,10 @@ function resolveLaunchOpts(overrides = {}) {
             gameMode,
             moProfile,
             moRoot,
-            dataPath,
+            // Default -D: to MO2's own gamePath\Data. Without it xEdit uses the
+            // registry-discovered (raw Steam) install, which the VFS never covers,
+            // and silently loads only the 16-ish vanilla files.
+            dataPath: dataPath ?? resolveMo2DataPath(moRoot),
             pluginsFile,
             iKnowWhatImDoing,
             starfieldRedPill,
@@ -138,7 +142,7 @@ function resolveLaunchOpts(overrides = {}) {
             gameMode: gameMode ?? "Fallout4",
             moProfile,
             moRoot: candidateMoRoot,
-            dataPath,
+            dataPath: dataPath ?? resolveMo2DataPath(candidateMoRoot),
             pluginsFile,
             iKnowWhatImDoing,
             starfieldRedPill,
@@ -184,7 +188,7 @@ const LAUNCH_OVERRIDE_PROPERTIES = {
     },
     dataPath: {
         type: "string",
-        description: "-D: flag value: absolute path to the game Data directory. Pass MO2's <gamePath>\\Data to avoid xEdit's registry-discovered Steam path. Use backslashes; the launcher normalizes mixed slashes.",
+        description: "-D: flag value: absolute path to the game Data directory. Defaults to <gamePath>\\Data read from <moRoot>/ModOrganizer.ini, so it only needs passing to override that. Without a value, xEdit falls back to its registry-discovered (raw Steam) install, which MO2's VFS does not cover - it then loads only the vanilla masters and none of the profile's mods. Use backslashes; the launcher normalizes mixed slashes.",
     },
     pluginsFile: {
         type: "string",
@@ -616,6 +620,13 @@ export async function main() {
     let toolset = null;
     let daemonRef = null;
     let launchGeneration = 0;
+    // Tracks the in-flight launch (state "starting") so xedit_stop/xedit_restart
+    // can actually cancel it. Before this existed, stopping mid-launch only
+    // cleared MCP-side state - daemonRef was still null at that point (it's set
+    // after launchDaemon resolves), so there was nothing for `current.stop()` to
+    // act on and the spawned `xedit-client.ps1 process launch` child (and
+    // anything it had already spawned) kept running orphaned indefinitely.
+    let launchAbortController = null;
     const pendingSaveTracker = new PendingSaveTracker();
     let lastFlush;
     const audit = createAuditLogger({ baseDir: join(tmpdir(), "xedit-mcp-audit") });
@@ -624,6 +635,17 @@ export async function main() {
         state = next;
         toolset = null;
         daemonRef = null;
+        // Cancel an in-flight launch, if any - without this, stopping while
+        // state.status is "starting" (daemonRef still null, launchDaemon() not
+        // yet resolved) had nothing to act on: the launchGeneration bump above
+        // only gets checked AFTER launchDaemon() resolves, so a launch stuck
+        // earlier than that (e.g. inside the outer `process launch` invocation)
+        // just kept running orphaned. See launchAbortController's declaration
+        // comment for the directly-observed symptom this fixes.
+        if (launchAbortController) {
+            launchAbortController.abort();
+            launchAbortController = null;
+        }
         pendingSaveTracker.clearForSessionTransition();
     }
     async function getDirtyState() {
@@ -707,11 +729,13 @@ export async function main() {
         }
         const launchGen = ++launchGeneration;
         state = { status: "starting", startedAt: Date.now() };
+        const abortController = new AbortController();
+        launchAbortController = abortController;
         // Fire-and-forget: this promise resolves in the background while tool calls
         // return immediately. State is mutated in the closures below.
         void (async () => {
             try {
-                const daemon = await launchDaemon(opts);
+                const daemon = await launchDaemon({ ...opts, signal: abortController.signal });
                 if (launchGen !== launchGeneration) {
                     try {
                         await daemon.stop();
@@ -739,6 +763,11 @@ export async function main() {
                 state = { status: "failed", error: msg, at: Date.now() };
                 daemonRef = null;
                 toolset = null;
+            }
+            finally {
+                if (launchAbortController === abortController) {
+                    launchAbortController = null;
+                }
             }
         })();
         return { kicked: true };

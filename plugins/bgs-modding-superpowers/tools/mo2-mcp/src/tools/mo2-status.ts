@@ -12,6 +12,7 @@ import { readProfile } from "../profile-reader.js";
 import { readMoIni, type MoIni } from "../mo-ini.js";
 import type { ToolContext } from "../types.js";
 import { requireBoundContext, bindingSnapshot } from "../binding.js";
+import { resolveProfileName } from "../path-helpers.js";
 
 const inputSchema = z.object({ profile: z.string().optional() });
 
@@ -19,19 +20,24 @@ function nonEmpty(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
+/**
+ * mo2_status used to run its own resolution chain, consulting
+ * $BGS_MO2_PROFILE and ModOrganizer.ini directly and ranking the env var above
+ * the session binding. That had two consequences: status could report a
+ * different profile than the one every other tool actually operated on, and
+ * reading process.env at call time made the tool non-hermetic — an env var set
+ * in the developer's shell changed the result under test.
+ *
+ * Both inputs are now folded into the binding itself (see bindNow), so the
+ * shared helper is the single source of truth and an explicit
+ * mo2_session({profile}) is no longer overridden by a stale env var.
+ */
 function resolveActiveProfile(
   args: Record<string, unknown>,
   ctx: ToolContext,
-  ini: MoIni,
+  _ini: MoIni,
 ): string | null {
-  const bound = requireBoundContext(ctx);
-  return (
-    nonEmpty(args.profile) ??
-    nonEmpty(process.env.BGS_MO2_PROFILE) ??
-    nonEmpty(ini.general.selectedProfile) ??
-    nonEmpty(bound.config.allowedProfiles[0]) ??
-    null
-  );
+  return nonEmpty(resolveProfileName(ctx, nonEmpty(args.profile))) ?? null;
 }
 
 registerTool({
@@ -58,7 +64,8 @@ registerTool({
         result: null,
         error: {
           code: "no_profile_available",
-          message: "No profile from args.profile, BGS_MO2_PROFILE, ModOrganizer.ini selected_profile, or allowed_profiles[0]",
+          message:
+            "No profile resolved. The binding resolves args.profile, then $BGS_MO2_PROFILE, then ModOrganizer.ini selected_profile, then allowed_profiles[0].",
         },
       };
     }

@@ -71,6 +71,12 @@
 .PARAMETER Force
   If OutputDir/PluginName exists, remove it before writing.
 
+.PARAMETER AdoptUnmarked
+  Allow -Force to replace an existing tree that carries no .bgs-portable-build
+  marker. Needed only to migrate a tree that predates marker tracking, or one
+  assembled by hand. The containment checks still apply, and a marker is
+  written on success so later builds no longer need this switch.
+
 .EXAMPLE
   pwsh scripts/build-portable-plugin.ps1
 
@@ -85,6 +91,7 @@
   Inputs that MUST exist before running:
     tools/xedit-mcp/dist/index.js  (run `npm run build` inside tools/xedit-mcp/ first)
     tools/bgs-kb-mcp/dist/index.js (run `npm run build` inside tools/bgs-kb-mcp/ first)
+    tools/mo2-mcp/dist/index.js    (run `npm run build` inside tools/mo2-mcp/ first)
     tools/xedit-hook-bridge/dist/xEditHookBridge.dll
 #>
 
@@ -102,7 +109,9 @@ param(
 
   [bool]$EmitMarketplace = $true,
 
-  [switch]$Force
+  [switch]$Force,
+
+  [switch]$AdoptUnmarked
 )
 
 $ErrorActionPreference = "Stop"
@@ -141,6 +150,7 @@ Write-Host "[build-portable-plugin] mcp path strategy: $McpPathStrategy"
 $RequiredArtifacts = @(
   "tools/xedit-mcp/dist/index.js",
   "tools/bgs-kb-mcp/dist/index.js",
+  "tools/mo2-mcp/dist/index.js",
   "tools/xedit-hook-bridge/dist/xEditHookBridge.dll"
 )
 foreach ($rel in $RequiredArtifacts) {
@@ -157,7 +167,12 @@ if (Test-Path -LiteralPath $FinalPluginRoot) {
     throw "$FinalPluginRoot already exists. Pass -Force to overwrite."
   }
   if (-not (Test-BgsGeneratedMarker -Target $FinalPluginRoot -MarkerName $GeneratedMarker)) {
-    throw "Refusing to replace '$FinalPluginRoot': no $GeneratedMarker marker. The materializer never adopts or overwrites an unmarked tree."
+    if (-not $AdoptUnmarked) {
+      throw "Refusing to replace '$FinalPluginRoot': no $GeneratedMarker marker. " +
+            "The materializer never adopts or overwrites an unmarked tree. " +
+            "Pass -AdoptUnmarked if this tree predates marker tracking; a marker is written on success."
+    }
+    Write-Warning "Adopting unmarked tree at '$FinalPluginRoot' (-AdoptUnmarked). Containment checks still apply."
   }
   $null = Assert-SafeDeleteTarget -Target $FinalPluginRoot -RepoRoot $RepoRoot -ContainmentRoot $BuildContainmentRoot
 }
@@ -595,7 +610,7 @@ if ($EmitMarketplace) {
 # external output on a later run. Mark only the fully materialized tree.
 Write-BgsGeneratedMarker -Target $PluginRoot -MarkerName $GeneratedMarker -Content "generatedBy=build-portable-plugin; createdAtUtc=$((Get-Date).ToUniversalTime().ToString('o')); pluginName=$PluginName; mcpPathStrategy=$McpPathStrategy"
 Remove-Item -LiteralPath (Join-Path $PluginRoot $StagingMarker) -Force
-$publishResult = Publish-StagedPortableTree -StagingRoot $StagingRoot -FinalRoot $FinalPluginRoot -RepoRoot $RepoRoot -ContainmentRoot $BuildContainmentRoot -GeneratedMarker $GeneratedMarker -StagingMarker $StagingMarker
+$publishResult = Publish-StagedPortableTree -StagingRoot $StagingRoot -FinalRoot $FinalPluginRoot -RepoRoot $RepoRoot -ContainmentRoot $BuildContainmentRoot -GeneratedMarker $GeneratedMarker -StagingMarker $StagingMarker -AdoptUnmarked:$AdoptUnmarked
 $StagingCreated = $false
 $PluginRoot = $publishResult.FinalRoot
 

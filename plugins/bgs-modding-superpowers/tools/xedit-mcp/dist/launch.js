@@ -104,7 +104,7 @@ export async function launchDaemon(opts) {
         if (opts.starfieldRedPill === false) {
             launchArgs.push("--no-starfield-redpill", "1");
         }
-        const launchOut = await runPwshCapture(pwsh, launchArgs);
+        const launchOut = await runPwshCapture(pwsh, launchArgs, undefined, opts.signal);
         pid = parseLaunchPid(launchOut);
         if (!pid) {
             throw new Error(`xedit-client process launch returned no pid: ${launchOut.slice(0, 600)}`);
@@ -114,6 +114,8 @@ export async function launchDaemon(opts) {
         let dwReady = false;
         let lastWaitErr;
         while (Date.now() < deadline) {
+            if (opts.signal?.aborted)
+                throw new LaunchAbortedError();
             try {
                 const waitOut = await runPwshCapture(pwsh, [
                     "-NoProfile",
@@ -125,7 +127,7 @@ export async function launchDaemon(opts) {
                     String(launchedPid),
                     "--timeout-seconds",
                     "1",
-                ]);
+                ], undefined, opts.signal);
                 if (!/^status:\s*exited\s*$/im.test(waitOut)) {
                     dwReady = true;
                     break;
@@ -133,6 +135,8 @@ export async function launchDaemon(opts) {
                 lastWaitErr = new Error(`Daemon exited before readiness confirmation: ${waitOut.slice(0, 400)}`);
             }
             catch (err) {
+                if (err instanceof LaunchAbortedError)
+                    throw err;
                 lastWaitErr = err;
             }
             await sleep(750);
@@ -151,6 +155,8 @@ export async function launchDaemon(opts) {
         // xEdit may serve the pipe before plugin load completes; this guards against the race.
         let lastFilesCount = 0;
         while (Date.now() < deadline) {
+            if (opts.signal?.aborted)
+                throw new LaunchAbortedError();
             try {
                 const res = await adapter.call({ command: "files.list", args: {} });
                 if (res.ok) {
@@ -230,8 +236,18 @@ function managedProcessIdentityProbeArgs(pid, launcherPath) {
     const encoded = Buffer.from(script, "utf16le").toString("base64");
     return ["-NoProfile", "-NonInteractive", "-EncodedCommand", encoded];
 }
-function runPwshCapture(pwsh, args, timeoutMs) {
+export class LaunchAbortedError extends Error {
+    constructor(message = "Launch aborted") {
+        super(message);
+        this.name = "LaunchAbortedError";
+    }
+}
+function runPwshCapture(pwsh, args, timeoutMs, signal) {
     return new Promise((resolve, reject) => {
+        if (signal?.aborted) {
+            reject(new LaunchAbortedError());
+            return;
+        }
         const child = spawn(pwsh, args, { stdio: ["ignore", "pipe", "pipe"] });
         let stdout = "";
         let stderr = "";
@@ -245,12 +261,31 @@ function runPwshCapture(pwsh, args, timeoutMs) {
                 child.kill();
                 reject(new Error(`PowerShell command timed out after ${timeoutMs} ms`));
             }, timeoutMs);
+        const onAbort = () => {
+            if (settled)
+                return;
+            settled = true;
+            if (timer)
+                clearTimeout(timer);
+            // Best-effort: also ask the process tree to die, not just this node.
+            // The spawned pwsh may itself have spawned xEdit/wrapper children (the
+            // exact orphaning shape this signal exists to prevent).
+            try {
+                child.kill();
+            }
+            catch {
+                /* best effort */
+            }
+            reject(new LaunchAbortedError());
+        };
+        signal?.addEventListener("abort", onAbort, { once: true });
         const finish = (callback, value) => {
             if (settled)
                 return;
             settled = true;
             if (timer)
                 clearTimeout(timer);
+            signal?.removeEventListener("abort", onAbort);
             callback(value);
         };
         child.stdout.on("data", (d) => (stdout += d.toString()));
