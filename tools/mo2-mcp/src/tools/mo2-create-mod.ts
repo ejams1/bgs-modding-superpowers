@@ -21,6 +21,11 @@ const inputSchema = z.discriminatedUnion("mode", [
     mode: z.literal("plan"),
     name: z.string().min(1),
     wins_over: z.string().min(1).optional(),
+    // If <modsDir>/<name> already exists on disk but MO2 has not registered
+    // it, register it as-is instead of creating a new empty mod. Without this
+    // the broker refuses (rather than letting IOrganizer.createMod open MO2's
+    // modal "Mod Exists" dialog, which blocks the pipe until a human clicks).
+    adopt_existing: z.boolean().optional(),
     profile: z.string().optional(),
   }).strict(),
   z.object({ mode: z.literal("apply"), plan_id: z.string().min(1), lease_token: z.string().min(1) }).strict(),
@@ -66,8 +71,9 @@ const handler: PlanApplyHandler = {
     const winsOverText = winsOver !== undefined
       ? ` (wins_over ${winsOver}, pri=${String(targetPri)})`
       : "";
+    const adoptText = args.adopt_existing === true ? " (adopt_existing: register the folder if it already exists on disk)" : "";
     return {
-      diff: `Create empty mod ${String(args.name)}${winsOverText}`,
+      diff: `Create empty mod ${String(args.name)}${winsOverText}${adoptText}`,
       affectedFiles: [modlistPath],
       targets: [{ path: modlistPath, kind: "text-file" }],
     };
@@ -79,8 +85,9 @@ const handler: PlanApplyHandler = {
     await assertActiveProfile(ctx, profile);
     const winsOver = plan.args.wins_over as string | undefined;
     const targetPri = await _targetPriority(bound.config.mo2Root, profile, winsOver);
-    const payload: { name: string; priority?: number } = { name: plan.args.name as string };
+    const payload: { name: string; priority?: number; adopt_existing?: boolean } = { name: plan.args.name as string };
     if (targetPri !== undefined) payload.priority = targetPri;
+    if (plan.args.adopt_existing === true) payload.adopt_existing = true;
 
     const resp = await bound.pipeClient.call("mods.create", payload);
     if (!resp.ok) throw new Error(resp.error?.message ?? "broker error");
@@ -111,7 +118,7 @@ registerTool({
   name: "mo2_create_mod",
   tier: "T3",
   description:
-    "Create empty mod via broker mods.create. Optional 'wins_over' positions it just above a named mod in precedence (= just below visually in MO2 GUI).",
+    "Create empty mod via broker mods.create. Optional 'wins_over' positions it just above a named mod in precedence (= just below visually in MO2 GUI). If the mod folder already exists on disk but is unregistered, the broker refuses unless 'adopt_existing' is true, in which case it registers the folder as-is (never triggers MO2's modal 'Mod Exists' prompt).",
   inputSchema,
   handler: (args, ctx) =>
     routeToPlanApply(handler, args, ctx, ctx.plans, ctx.snapshots) as Promise<unknown>,

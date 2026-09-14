@@ -1250,6 +1250,13 @@ def _handle_mods_create(organizer, pump, payload):
                 "message": f"name '{name}' empty after sanitize",
             },
         }
+    adopt_existing = payload.get("adopt_existing", False)
+    if not isinstance(adopt_existing, bool):
+        return {
+            "ok": False,
+            "result": None,
+            "error": {"code": ErrorCode.INVALID_PARAMS, "message": "adopt_existing: bool"},
+        }
 
     def _on_main_thread():
         mod_list = organizer.modList()
@@ -1257,6 +1264,53 @@ def _handle_mods_create(organizer, pump, payload):
             return ("error", ErrorCode.INVALID_PARAMS, f"name '{sanitized_name}' already exists")
         if GuessedString is None:
             return ("error", ErrorCode.INTERNAL_ERROR, "mobase.GuessedString unavailable")
+
+        # A folder that exists under mods/ but is not registered (dropped in by
+        # hand, or by a tool that bypassed MO2) passes the getMod check above,
+        # and organizer.createMod() then opens MO2's modal "Mod Exists" dialog
+        # on the main thread. That modal's nested event loop blocks this pump
+        # turn, the client's pipe call times out, and the GUI sits on the
+        # prompt until a human dismisses it. Detect the folder first and never
+        # reach createMod for it.
+        mods_path_fn = getattr(organizer, "modsPath", None)
+        existing_dir = None
+        if callable(mods_path_fn):
+            try:
+                candidate = os.path.join(str(mods_path_fn()), sanitized_name)
+            except Exception:
+                candidate = None
+            if candidate and os.path.isdir(candidate):
+                existing_dir = candidate
+        if existing_dir is not None:
+            if not adopt_existing:
+                return (
+                    "error",
+                    ErrorCode.INVALID_PARAMS,
+                    f"mod folder already exists on disk but is not registered: {existing_dir}. "
+                    "createMod would open MO2's 'Mod Exists' dialog and block the broker; "
+                    "pass adopt_existing=true to register the existing folder as-is instead",
+                )
+            # MO2 registers unregistered folders under mods/ on refresh (the
+            # same thing the GUI's F5 does), without any prompt.
+            organizer.refresh()
+            adopted = organizer.modList().getMod(sanitized_name)
+            if adopted is None:
+                return ("error", ErrorCode.INTERNAL_ERROR, f"refresh did not register existing folder {existing_dir}")
+            adopted_name = adopted.name()
+            refreshed_list = organizer.modList()
+            result = {
+                "name": adopted_name,
+                "created": False,
+                "adopted": True,
+                "priority": refreshed_list.priority(adopted_name),
+                "absolute_path": adopted.absolutePath(),
+            }
+            if target_priority is not None:
+                refreshed_list.setPriority(adopted_name, target_priority)
+                result["priority"] = refreshed_list.priority(adopted_name)
+                result["requested_priority"] = target_priority
+            organizer.modDataChanged(adopted)
+            return ("ok", result)
 
         new_mod = organizer.createMod(GuessedString(sanitized_name))
         if new_mod is None:

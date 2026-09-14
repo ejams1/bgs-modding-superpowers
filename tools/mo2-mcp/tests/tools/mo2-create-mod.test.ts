@@ -191,6 +191,68 @@ describe("mo2_create_mod", () => {
     expect(apply.result._meta.priority_convention).toBe("mobase_full_space_higher_wins");
   });
 
+  it("apply passes adopt_existing through to mods.create and the plan diff mentions it", async () => {
+    const { ctx } = await _fixture();
+    const pipeCalls: Array<{ method: string; params: Record<string, unknown> }> = [];
+    ctx.pipeClient = {
+      call: async (method: string, params: Record<string, unknown>) => {
+        pipeCalls.push({ method, params });
+        if (method === "profile.active") return { ok: true, result: { name: "Default" }, error: null };
+        return { ok: true, result: { name: params.name, created: false, adopted: true } };
+      },
+      close: () => {},
+      discoverAndConnect: async () => {},
+      isConnected: () => true,
+    } as unknown as ToolContext["pipeClient"];
+    ctx.sidecar = {
+      call: async () => ({ invalidated: true }),
+      isReady: () => true,
+      start: async () => {},
+      stop: async () => {},
+    } as unknown as ToolContext["sidecar"];
+    const tool = getTool("mo2_create_mod")!;
+    const plan = await tool.handler({ mode: "plan", name: "DroppedInByHand", adopt_existing: true }, ctx) as {
+      ok: boolean;
+      result: { planId: string; lease_token: string; diff: string };
+    };
+    expect(plan.result.diff).toBe("Create empty mod DroppedInByHand (adopt_existing: register the folder if it already exists on disk)");
+
+    const apply = await tool.handler({ mode: "apply", plan_id: plan.result.planId, lease_token: plan.result.lease_token }, ctx) as {
+      ok: boolean;
+      result: { adopted: boolean };
+    };
+
+    expect(apply.ok).toBe(true);
+    expect(pipeCalls.find((c) => c.method === "mods.create")?.params).toEqual({ name: "DroppedInByHand", adopt_existing: true });
+    expect(apply.result.adopted).toBe(true);
+  });
+
+  it("apply omits adopt_existing from the mods.create payload when not requested", async () => {
+    const { ctx } = await _fixture();
+    const pipeCalls: Array<{ method: string; params: Record<string, unknown> }> = [];
+    ctx.pipeClient = {
+      call: async (method: string, params: Record<string, unknown>) => {
+        pipeCalls.push({ method, params });
+        if (method === "profile.active") return { ok: true, result: { name: "Default" }, error: null };
+        return { ok: true, result: { name: params.name, created: true } };
+      },
+      close: () => {},
+      discoverAndConnect: async () => {},
+      isConnected: () => true,
+    } as unknown as ToolContext["pipeClient"];
+    ctx.sidecar = {
+      call: async () => ({ invalidated: true }),
+      isReady: () => true,
+      start: async () => {},
+      stop: async () => {},
+    } as unknown as ToolContext["sidecar"];
+    const tool = getTool("mo2_create_mod")!;
+    const plan = await tool.handler({ mode: "plan", name: "Fresh" }, ctx) as { ok: boolean; result: { planId: string; lease_token: string } };
+    await tool.handler({ mode: "apply", plan_id: plan.result.planId, lease_token: plan.result.lease_token }, ctx);
+
+    expect(pipeCalls.find((c) => c.method === "mods.create")?.params).toEqual({ name: "Fresh" });
+  });
+
   it("cross-profile live plan blocks when requested profile is not the active MO2 profile", async () => {
     const { ctx } = await _fixture();
     const tool = getTool("mo2_create_mod")!;
