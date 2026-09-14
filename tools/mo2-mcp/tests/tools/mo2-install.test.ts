@@ -371,6 +371,82 @@ describe("mo2_install", () => {
     expect(apply.result.pluginWarnings).toMatchObject({ warnings: [], scannedCount: 1, enabledCount: 1 });
   });
 
+  it("U1: apply re-checks existsSync on the live broker path and never calls installation.create_mod_from_directory when a folder appeared after plan", async () => {
+    const { root, ctx } = await _fixture((rootDir) => ({
+      call: async (method, params) => {
+        if (method === "fomod.parse_choices") {
+          throw new Error("not_a_fomod");
+        }
+        if (method === "archive.extract_all") {
+          const dest = (params as { dest: string }).dest;
+          await mkdir(dest, { recursive: true });
+          await writeFile(join(dest, "live.esp"), "fake-live", "utf8");
+          return { files: ["live.esp"], file_count: 1, dest, format: "7z" };
+        }
+        if (method === "world.invalidate") return { invalidated: true };
+        throw new Error(`unmocked sidecar: ${method}`);
+      },
+      isReady: () => true,
+      start: async () => {},
+      stop: async () => {},
+    }));
+    const brokerCalls: Array<{ method: string; params: unknown }> = [];
+    ctx.pipeClient = {
+      // This mock would otherwise succeed at every step, so the test only
+      // passes because the client-side existsSync guard fires -- if the
+      // guard regressed, apply would sail through to a resolved promise
+      // instead of throwing, and the assertions below would fail on that.
+      call: async (method: string, params: unknown) => {
+        brokerCalls.push({ method, params });
+        if (method === "profile.active") return { ok: true, result: { name: "Default" }, error: null };
+        if (method === "installation.create_mod_from_directory") {
+          const absolutePath = join(root, "mods", "RaceMod");
+          await mkdir(absolutePath, { recursive: true });
+          return { ok: true, result: { name: "RaceMod", absolute_path: absolutePath }, error: null };
+        }
+        if (method === "plugins.register_from_mod") {
+          return {
+            ok: true,
+            result: {
+              plugins_added: ["live.esp"],
+              plugins_registered: [{ name: "live.esp", priority: 1, state: "2" }],
+              refresh_settled: true,
+            },
+            error: null,
+          };
+        }
+        if (method === "mods.list") return { ok: true, result: { mods: [{ name: "RaceMod", priority: 1 }] }, error: null };
+        if (method === "plugins.missing_masters") return {
+          ok: true,
+          result: { warnings: [], scanned_count: 1, enabled_count: 1 },
+          error: null,
+        };
+        throw new Error(`unmocked broker: ${method}`);
+      },
+      close: () => {},
+      discoverAndConnect: async () => {},
+      isConnected: () => true,
+    } as unknown as ToolContext["pipeClient"];
+
+    const tool = getTool("mo2_install")!;
+    const plan = (await tool.handler(
+      { mode: "plan", archive_path: "/tmp/race.7z", mod_name: "RaceMod", target_priority: "gui_bottom" },
+      ctx,
+    )) as { ok: boolean; result: { planId: string; lease_token: string } };
+
+    // Simulate the TOCTOU race: a folder named RaceMod appears on disk
+    // between plan and apply (lease/staging delay, concurrent tooling, or a
+    // hand-dropped folder) -- buildPlan's existsSync guard already passed
+    // against an empty mods dir, so only apply's own guard can catch this.
+    await mkdir(join(root, "mods", "RaceMod"), { recursive: true });
+
+    await expect(
+      tool.handler({ mode: "apply", plan_id: plan.result.planId, lease_token: plan.result.lease_token }, ctx),
+    ).rejects.toThrow(/mod_name_exists/);
+
+    expect(brokerCalls.map((call) => call.method)).not.toContain("installation.create_mod_from_directory");
+  });
+
   it("Phase 3: target_priority gui_top places installed mod at GUI top / priority 0", async () => {
     const { root, ctx } = await _fixture((_root) => ({
       call: async (method, params) => {
