@@ -18,6 +18,20 @@ cd ..\..
 
 The repo carries a dedicated MO2 sandbox under `.artifacts/mo2/` (gitignored — bring your own for now). The development plan and roadmap live in `docs/internal/`.
 
+### Dev sessions inside this repo don't use this repo's `.mcp.json`
+
+The root [`.mcp.json`](.mcp.json) doubles as the plugin manifest — it uses
+`${CLAUDE_PLUGIN_ROOT}`, which only resolves when the file is loaded *as a
+plugin*. Claude Code also reads it as a project-scoped MCP config when you
+open this directory as a project, where that variable is undefined; the
+three servers then fail to start (`CONNECTION_CLOSED`). `.claude/settings.local.json`
+lists `xedit`, `bgs_kb`, and `mo2` under `disabledMcpjsonServers` for exactly
+this reason — install the plugin normally (see README.md) and use the
+plugin-loaded copies of the servers while developing here. If you need to
+exercise an unreleased `tools/` build from inside the repo, point a separate,
+non-committed MCP config at the built `dist/index.js` files with explicit
+paths instead of re-enabling the project-scoped entries.
+
 ## Branch conventions
 
 - Work on feature branches: `feat/<topic>`, `fix/<topic>`, `chore/<topic>`, `reshape/<topic>`.
