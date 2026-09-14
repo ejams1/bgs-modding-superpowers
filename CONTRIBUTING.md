@@ -66,6 +66,43 @@ paths instead of re-enabling the project-scoped entries.
 - If the change touches shippable surfaces (skills, MCP, manifests, scripts), confirm it still installs cleanly into a fresh OpenCode profile against the dev MO2 sandbox.
 - Don't commit `node_modules/`, `.artifacts/` content, or other gitignored material.
 
+## Local hooks (plugins/ mirror freshness)
+
+`plugins/bgs-modding-superpowers/` is a tracked, generated mirror of `tools/`,
+`skills/`, `hooks/`, and `knowledge/` (built by
+`scripts/build-portable-plugin.ps1`). Nothing on GitHub enforces that a
+commit touching those source trees also regenerates the mirror — this repo
+has no CI — so it is easy to land source changes and forget the mirror, the
+way `plugins/` drifted four commits stale before the 2026-09-14 inherited-
+project review (see `docs/internal/reviews/2026-09-14-inherited-project-review.md`,
+findings L1/U5).
+
+`scripts/check-plugin-mirror-freshness.ps1` checks for exactly that: it finds
+the most recent commit that touched `plugins/`, then fails if any later
+commit touched `tools/`, `skills/`, `hooks/`, or `knowledge/` without a
+follow-up mirror commit. It's wired up as a tracked pre-push hook at
+`.githooks/pre-push`, but git does not use that path unless you opt in once
+per clone:
+
+```powershell
+git config core.hooksPath .githooks
+```
+
+This is a local, opt-in gate, not enforced server-side — `git push
+--no-verify`, a clone that never ran the command above, or a PR opened
+without pushing through this checkout all skip it. Run the check manually at
+any time with:
+
+```powershell
+pwsh -NoProfile -File scripts/check-plugin-mirror-freshness.ps1
+```
+
+If it reports drift, regenerate the mirror before pushing:
+
+```powershell
+pwsh -NoProfile -File scripts/build-portable-plugin.ps1 -OutputDir plugins -Force
+```
+
 ## Version bumping
 
 Versions across `package.json`, `.claude-plugin/{plugin,marketplace}.json`, and `.codex-plugin/plugin.json` are kept in lockstep by `scripts/bump-version.sh` driven by `.version-bump.json`:

@@ -1,0 +1,31 @@
+#!/bin/sh
+# Tracked, opt-in pre-push hook: fails the push when tools/, skills/,
+# hooks/, or knowledge/ changed without plugins/ being regenerated to
+# match. See scripts/check-plugin-mirror-freshness.ps1 for the actual
+# check and docs/internal/reviews/2026-09-14-inherited-project-review.md
+# (L1, U5) for why this exists.
+#
+# Not enforced GitHub-side -- this repo has no CI. It only runs for
+# contributors who opted in with:
+#   git config core.hooksPath .githooks
+# (documented in CONTRIBUTING.md). Anyone who pushes without that config
+# set, or with --no-verify, skips it.
+#
+# git invokes hooks via sh, including on Windows through Git for Windows'
+# bundled MSYS sh, so this file needs no separate .cmd counterpart the way
+# hooks/run-hook.cmd does for the Claude Code SessionStart hook (which is
+# invoked directly by cmd.exe, not by git).
+
+set -e
+
+repo_root=$(git rev-parse --show-toplevel)
+
+if command -v pwsh >/dev/null 2>&1; then
+  pwsh -NoProfile -File "$repo_root/scripts/check-plugin-mirror-freshness.ps1"
+  exit $?
+fi
+
+echo "pre-push: pwsh not found on PATH; skipping plugins/ mirror freshness check." >&2
+echo "pre-push: install PowerShell 7+ (pwsh) to get this check, or run it manually:" >&2
+echo "pre-push:   pwsh -NoProfile -File scripts/check-plugin-mirror-freshness.ps1" >&2
+exit 0

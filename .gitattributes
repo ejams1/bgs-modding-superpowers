@@ -10,6 +10,12 @@
 **/dist/**       text eol=lf
 *.js.map         text eol=lf
 
+# git invokes hook scripts via sh (including Git for Windows' bundled MSYS
+# sh) -- a CRLF-mangled shebang line breaks that on checkout. Pin eol=lf so
+# .githooks/pre-push (and any siblings added later) run regardless of the
+# checking-out platform's autocrlf setting.
+.githooks/*      text eol=lf
+
 # Bundled binary assets — never let text=auto + autocrlf touch these. Some
 # of the listed formats (notably .dll) have NUL-free header regions long
 # enough that text=auto's heuristic misfires and corrupts them on checkout.
