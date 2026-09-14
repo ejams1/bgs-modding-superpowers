@@ -1,10 +1,10 @@
 $ErrorActionPreference = "Stop"
 
 $requiredPaths = @(
-    "hooks/runtime-compatibility.md",
-    "hooks/repo-cleanliness.md",
-    "hooks/scope-guard.md",
-    "hooks/dev-log-reminder.md"
+    "docs/internal/hook-specs/runtime-compatibility.md",
+    "docs/internal/hook-specs/repo-cleanliness.md",
+    "docs/internal/hook-specs/scope-guard.md",
+    "docs/internal/hook-specs/dev-log-reminder.md"
 )
 
 $missing = $requiredPaths | Where-Object { -not (Test-Path $_) }
