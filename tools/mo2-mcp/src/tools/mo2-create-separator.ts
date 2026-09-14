@@ -7,16 +7,17 @@
 import { z } from "zod";
 import { join } from "node:path";
 import { mkdir } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { registerTool } from "../tool-registry.js";
 import { routeToPlanApply, type PlanApplyHandler } from "../plan-apply.js";
 import { readProfile } from "../profile-reader.js";
-import { resolveProfileDir, resolveProfileName } from "../path-helpers.js";
-import { readMoIni } from "../mo-ini.js";
+import { resolveModsDir, resolveProfileDir, resolveProfileName } from "../path-helpers.js";
 import { atomicWriteText } from "../atomic.js";
 import { assertActiveProfile } from "../profile-guard.js";
 import { invalidateWorld } from "./state-sync.js";
 import { requireBoundContext } from "../binding.js";
 import { logApplyEvent } from "../log-apply.js";
+import { BrokerEnrichedError } from "../broker-error.js";
 
 const inputSchema = z.discriminatedUnion("mode", [
   z.object({
@@ -24,6 +25,10 @@ const inputSchema = z.discriminatedUnion("mode", [
     name: z.string().min(1),
     wins_over: z.string().min(1).optional(),
     color: z.string().optional(),
+    // See mo2_create_mod's adopt_existing: without this, a stale unregistered
+    // <name>_separator folder left by an aborted apply or hand copy is
+    // refused by the broker with no way to satisfy its own advice (U10).
+    adopt_existing: z.boolean().optional(),
     profile: z.string().optional(),
   }).strict(),
   z.object({ mode: z.literal("apply"), plan_id: z.string().min(1), lease_token: z.string().min(1) }).strict(),
@@ -70,11 +75,28 @@ const handler: PlanApplyHandler = {
     const targetPri = await _targetPriority(bound.config.mo2Root, profile, winsOver);
     const sepName = _separatorName(args.name);
     const modlistPath = join(resolveProfileDir(ctx, profile), "modlist.txt");
+    const modsDir = await resolveModsDir(ctx);
+    const targetPath = join(modsDir, sepName);
+    // U10/U4 parity: mirror the broker's existence guard at plan time.
+    const dirExists = existsSync(targetPath);
+    if (dirExists && args.adopt_existing !== true) {
+      throw new BrokerEnrichedError({
+        code: "mod_dir_exists_unregistered",
+        message: `mod_dir_exists_unregistered: ${targetPath} already exists on disk but is not registered by MO2 (creating it would trigger the blocking "Mod Exists" dialog). Pass adopt_existing=true to register it as-is.`,
+        details: { existing_dir: targetPath, name: sepName },
+      });
+    }
+    const adopting = dirExists && args.adopt_existing === true;
     const winsOverText = winsOver === undefined ? "" : ` (wins_over ${winsOver}, pri=${targetPri})`;
     const colorText = typeof args.color === "string" ? ` color=${args.color}` : "";
+    const diff = adopting
+      ? `Adopt existing folder as separator "${String(args.name)}" → ${sepName}${winsOverText}${colorText}`
+      : `Create separator "${String(args.name)}" → ${sepName}${winsOverText}${colorText}`;
     return {
-      diff: `Create separator "${String(args.name)}" → ${sepName}${winsOverText}${colorText}`,
-      affectedFiles: [modlistPath],
+      diff,
+      // U14 parity: cover the separator's mod dir so mo2_rollback can undo
+      // the registration, not just the modlist.txt line.
+      affectedFiles: [modlistPath, targetPath],
       targets: [{ path: modlistPath, kind: "text-file" }],
     };
   },
@@ -86,16 +108,37 @@ const handler: PlanApplyHandler = {
     const sepName = _separatorName(plan.args.name);
     const winsOver = plan.args.wins_over as string | undefined;
     const targetPri = await _targetPriority(bound.config.mo2Root, profile, winsOver);
-    const payload: { name: string; priority?: number } = { name: sepName };
+    const payload: { name: string; priority?: number; adopt_existing?: boolean } = { name: sepName };
     if (targetPri !== undefined) payload.priority = targetPri;
+    if (plan.args.adopt_existing === true) payload.adopt_existing = true;
 
     const resp = await bound.pipeClient.call("mods.create", payload);
-    if (!resp.ok) throw new Error(resp.error?.message ?? "broker error");
+    if (!resp.ok) {
+      // U12 (TS half), same as mo2_create_mod: preserve the broker's code +
+      // details instead of a generic Error, so mod_dir_exists_unregistered
+      // (and the adopt_existing hint it carries) is branchable.
+      const details = resp.error?.details && typeof resp.error.details === "object"
+        ? { ...(resp.error.details as Record<string, unknown>) }
+        : {};
+      throw new BrokerEnrichedError({
+        code: resp.error?.code ?? "broker_error",
+        message: resp.error?.message ?? "broker error",
+        details,
+      });
+    }
+    const result = (resp.result ?? {}) as Record<string, unknown>;
+    // U2 parity: a stale broker silently drops adopt_existing rather than
+    // rejecting it, so verify the response actually claims adopted or created.
+    if (plan.args.adopt_existing === true && result.adopted !== true && result.created !== true) {
+      throw new BrokerEnrichedError({
+        code: "stale_broker_dropped_adopt_existing",
+        message: `mods.create for separator "${sepName}" returned neither adopted nor created after requesting adopt_existing=true. The deployed control-plane broker may predate adopt_existing support and silently ignored it, which risks MO2's blocking "Mod Exists" dialog. Redeploy the control plane (scripts/install-mo2-control-plane.ps1) and retry.`,
+        details: { name: sepName, result },
+      });
+    }
 
     // Defensive: ensure separator folder exists on disk (see mo2_create_mod for rationale).
-    const result = (resp.result ?? {}) as Record<string, unknown>;
-    const ini = await readMoIni(join(bound.config.mo2Root, "ModOrganizer.ini"));
-    const modsDir = ini.settings.modDirectory ?? join(bound.config.mo2Root, "mods");
+    const modsDir = await resolveModsDir(ctx);
     const absPath = typeof result.absolute_path === "string"
       ? (result.absolute_path as string)
       : join(modsDir, sepName);
@@ -106,15 +149,18 @@ const handler: PlanApplyHandler = {
     }
 
     await invalidateWorld(ctx, [profile]);
+    // U9 parity: report adopted vs created and the broker-confirmed priority.
+    const adopted = result.adopted === true;
+    const reportedPriority = result.priority ?? targetPri ?? "none";
     await logApplyEvent(
       handler.toolName,
-      `created separator "${sepName}" wins_over="${winsOver ?? "none"}" → priority ${targetPri ?? "none"}`,
+      `${adopted ? "adopted" : "created"} separator "${sepName}" wins_over="${winsOver ?? "none"}" → priority ${reportedPriority}`,
       bound,
       plan.planId,
       profile,
     );
 
-    return { separator_name: sepName, color_set: typeof plan.args.color === "string", _meta: RESPONSE_META };
+    return { separator_name: sepName, color_set: typeof plan.args.color === "string", ...result, _meta: RESPONSE_META };
   },
 };
 

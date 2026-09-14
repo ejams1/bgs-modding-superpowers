@@ -7,6 +7,7 @@ import { getTool, _clearToolsForTests } from "../../src/tool-registry.js";
 import { PlanCache } from "../../src/plan-apply.js";
 import { SnapshotManager } from "../../src/snapshot.js";
 import { AuditLogger } from "../../src/audit.js";
+import { BrokerEnrichedError } from "../../src/broker-error.js";
 import type { ToolContext } from "../../src/types.js";
 
 async function _fixture(withPipe = true): Promise<{ root: string; ctx: ToolContext }> {
@@ -192,5 +193,94 @@ describe("mo2_create_separator", () => {
     const tool = getTool("mo2_create_separator")!;
 
     await expect(tool.handler({ mode: "plan", name: "Section", wins_over: "AnchorMod", profile: "BB84自用" }, ctx)).rejects.toThrow(/cross_profile_live_mutation_blocked/);
+  });
+
+  it("U10: plan refuses with a coded error when the separator folder already exists on disk and adopt_existing is not set", async () => {
+    const { root, ctx } = await _fixture();
+    await mkdir(join(root, "mods", "Section_separator"), { recursive: true });
+    const tool = getTool("mo2_create_separator")!;
+
+    const caught = await tool.handler({ mode: "plan", name: "Section" }, ctx).then(() => undefined, (e: unknown) => e);
+
+    expect(caught).toBeInstanceOf(BrokerEnrichedError);
+    const err = caught as BrokerEnrichedError;
+    expect(err.code).toBe("mod_dir_exists_unregistered");
+    expect(err.details.existing_dir).toBe(join(root, "mods", "Section_separator"));
+  });
+
+  it("U10: plan with adopt_existing against an existing separator folder diffs as an adoption and can now satisfy the broker's own advice", async () => {
+    const { root, ctx } = await _fixture();
+    await mkdir(join(root, "mods", "Section_separator"), { recursive: true });
+    const tool = getTool("mo2_create_separator")!;
+
+    const plan = await tool.handler({ mode: "plan", name: "Section", adopt_existing: true }, ctx) as {
+      ok: boolean;
+      result: { diff: string; affected_files: string[] };
+    };
+
+    expect(plan.ok).toBe(true);
+    expect(plan.result.diff).toBe('Adopt existing folder as separator "Section" → Section_separator');
+    expect(plan.result.affected_files).toContain(join(root, "mods", "Section_separator"));
+  });
+
+  it("U2/U10: apply throws when adopt_existing is requested but a stale broker's response claims neither adopted nor created", async () => {
+    const { ctx } = await _fixture();
+    ctx.pipeClient = {
+      call: async (method: string, params: Record<string, unknown>) => {
+        if (method === "profile.active") return { ok: true, result: { name: "Default" }, error: null };
+        if (method === "mods.create") return { ok: true, result: { name: params.name } };
+        return { ok: true, result: {} };
+      },
+      close: () => {},
+      discoverAndConnect: async () => {},
+      isConnected: () => true,
+    } as unknown as ToolContext["pipeClient"];
+    const tool = getTool("mo2_create_separator")!;
+    const plan = await tool.handler({ mode: "plan", name: "Plain", adopt_existing: true }, ctx) as {
+      ok: boolean;
+      result: { planId: string; lease_token: string };
+    };
+
+    const caught = await tool.handler(
+      { mode: "apply", plan_id: plan.result.planId, lease_token: plan.result.lease_token },
+      ctx,
+    ).then(() => undefined, (e: unknown) => e);
+
+    expect(caught).toBeInstanceOf(BrokerEnrichedError);
+    const err = caught as BrokerEnrichedError;
+    expect(err.code).toBe("stale_broker_dropped_adopt_existing");
+    expect(err.message).toMatch(/redeploy/i);
+  });
+
+  it("U9/U10: apply log reports an adoption (not a creation) with the broker-confirmed priority", async () => {
+    const { root, ctx } = await _fixture();
+    await mkdir(join(root, "mods", "Section_separator"), { recursive: true });
+    const pipeCalls: Array<{ method: string; params: Record<string, unknown> }> = [];
+    ctx.pipeClient = {
+      call: async (method: string, params: Record<string, unknown>) => {
+        pipeCalls.push({ method, params });
+        if (method === "profile.active") return { ok: true, result: { name: "Default" }, error: null };
+        return { ok: true, result: { name: params.name, created: false, adopted: true, priority: 9 } };
+      },
+      close: () => {},
+      discoverAndConnect: async () => {},
+      isConnected: () => true,
+    } as unknown as ToolContext["pipeClient"];
+    ctx.sidecar = {
+      call: async () => ({ invalidated: true }),
+      isReady: () => true,
+      start: async () => {},
+      stop: async () => {},
+    } as unknown as ToolContext["sidecar"];
+    const tool = getTool("mo2_create_separator")!;
+    const plan = await tool.handler({ mode: "plan", name: "Section", adopt_existing: true }, ctx) as {
+      ok: boolean;
+      result: { planId: string; lease_token: string };
+    };
+    await tool.handler({ mode: "apply", plan_id: plan.result.planId, lease_token: plan.result.lease_token }, ctx);
+
+    expect(pipeCalls.find((c) => c.method === "system.log_apply")?.params).toEqual(
+      expect.objectContaining({ summary: "adopted separator \"Section_separator\" wins_over=\"none\" → priority 9" }),
+    );
   });
 });
