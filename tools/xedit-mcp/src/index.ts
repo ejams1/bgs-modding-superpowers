@@ -23,6 +23,7 @@ import { makeCallHandler } from "./tools/call.js";
 import { refuse } from "./envelope.js";
 import { MCP_ERROR_CODES } from "./types.js";
 import { launchDaemon, type LaunchOptions, type LaunchedDaemon } from "./launch.js";
+import { resolveMo2DataPath } from "./mo2-ini.js";
 import {
   PendingSaveTracker,
   dirtyFileNames,
@@ -220,7 +221,10 @@ function resolveLaunchOpts(overrides: LaunchOverrides = {}): ResolvedLaunchOpts 
       gameMode,
       moProfile,
       moRoot,
-      dataPath,
+      // Default -D: to MO2's own gamePath\Data. Without it xEdit uses the
+      // registry-discovered (raw Steam) install, which the VFS never covers,
+      // and silently loads only the 16-ish vanilla files.
+      dataPath: dataPath ?? resolveMo2DataPath(moRoot),
       pluginsFile,
       iKnowWhatImDoing,
       starfieldRedPill,
@@ -246,7 +250,7 @@ function resolveLaunchOpts(overrides: LaunchOverrides = {}): ResolvedLaunchOpts 
       gameMode: gameMode ?? "Fallout4",
       moProfile,
       moRoot: candidateMoRoot,
-      dataPath,
+      dataPath: dataPath ?? resolveMo2DataPath(candidateMoRoot),
       pluginsFile,
       iKnowWhatImDoing,
       starfieldRedPill,
@@ -297,7 +301,7 @@ const LAUNCH_OVERRIDE_PROPERTIES = {
   dataPath: {
     type: "string" as const,
     description:
-      "-D: flag value: absolute path to the game Data directory. Pass MO2's <gamePath>\\Data to avoid xEdit's registry-discovered Steam path. Use backslashes; the launcher normalizes mixed slashes.",
+      "-D: flag value: absolute path to the game Data directory. Defaults to <gamePath>\\Data read from <moRoot>/ModOrganizer.ini, so it only needs passing to override that. Without a value, xEdit falls back to its registry-discovered (raw Steam) install, which MO2's VFS does not cover - it then loads only the vanilla masters and none of the profile's mods. Use backslashes; the launcher normalizes mixed slashes.",
   },
   pluginsFile: {
     type: "string" as const,
