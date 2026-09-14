@@ -736,6 +736,80 @@ def test_mods_create_adopt_existing_resolves_ntfs_case_mismatch(monkeypatch, tmp
     organizer.createMod.assert_not_called()
 
 
+def test_mods_create_adopt_existing_reports_inventory(monkeypatch, tmp_path):
+    """U11: adopt_existing registers whatever a stale folder actually
+    contains -- never an empty mod -- so the result must include an
+    inventory of it (file count, total bytes, plugin names) instead of the
+    bare created/adopted/priority envelope a genuine empty creation gets."""
+    bridge = _load_bridge(monkeypatch)
+
+    stale_dir = tmp_path / "PatchHub"
+    stale_dir.mkdir()
+    (stale_dir / "readme.txt").write_bytes(b"hello")
+    (stale_dir / "Patch.esp").write_bytes(b"esp-bytes-here")
+    nested = stale_dir / "textures"
+    nested.mkdir()
+    (nested / "Patch.esl").write_bytes(b"esl")
+
+    adopted_mod = MagicMock()
+    adopted_mod.name.return_value = "PatchHub"
+    adopted_mod.absolutePath.return_value = str(stale_dir)
+
+    mod_list = MagicMock()
+    mod_list.getMod.return_value = None
+
+    refreshed_list = MagicMock()
+    refreshed_list.getMod.return_value = adopted_mod
+    refreshed_list.priority.return_value = 5
+
+    organizer = MagicMock()
+    organizer.modList.side_effect = [mod_list, refreshed_list]
+    organizer.modsPath.return_value = str(tmp_path)
+
+    pump = MagicMock()
+    pump.invoke_blocking.side_effect = lambda fn, timeout_s=15: fn()
+    monkeypatch.setattr(bridge, "GuessedString", lambda name: name, raising=False)
+
+    result = bridge._handle_mods_create(
+        organizer, pump, {"name": "PatchHub", "adopt_existing": True}
+    )
+
+    assert result["ok"] is True
+    inventory = result["result"]["inventory"]
+    assert inventory["file_count"] == 3
+    assert inventory["total_bytes"] == len(b"hello") + len(b"esp-bytes-here") + len(b"esl")
+    assert inventory["plugin_names"] == ["Patch.esl", "Patch.esp"]
+
+
+def test_mods_create_fresh_result_has_no_inventory(monkeypatch, tmp_path):
+    """A genuine empty creation is not an adopt; it must not carry an
+    inventory field (there is nothing to inventory, and its presence would
+    wrongly imply this path also registers pre-existing folder contents)."""
+    bridge = _load_bridge(monkeypatch)
+
+    new_mod = MagicMock()
+    new_mod.name.return_value = "Fresh"
+    new_mod.absolutePath.return_value = str(tmp_path / "Fresh")
+
+    mod_list = MagicMock()
+    mod_list.getMod.return_value = None
+    mod_list.priority.return_value = 7
+
+    organizer = MagicMock()
+    organizer.modList.return_value = mod_list
+    organizer.modsPath.return_value = str(tmp_path)
+    organizer.createMod.return_value = new_mod
+
+    pump = MagicMock()
+    pump.invoke_blocking.side_effect = lambda fn, timeout_s=15: fn()
+    monkeypatch.setattr(bridge, "GuessedString", lambda name: name, raising=False)
+
+    result = bridge._handle_mods_create(organizer, pump, {"name": "Fresh"})
+
+    assert result["ok"] is True
+    assert "inventory" not in result["result"]
+
+
 def test_mods_create_adopt_existing_without_folder_is_refused(monkeypatch, tmp_path):
     """U7: adopt_existing=true with nothing on disk to adopt must refuse, not
     silently fall through to createMod and mint a brand-new empty mod under a

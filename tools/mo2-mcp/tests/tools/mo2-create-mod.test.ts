@@ -7,6 +7,7 @@ import { getTool, _clearToolsForTests } from "../../src/tool-registry.js";
 import { PlanCache } from "../../src/plan-apply.js";
 import { SnapshotManager } from "../../src/snapshot.js";
 import { AuditLogger } from "../../src/audit.js";
+import { BrokerEnrichedError } from "../../src/broker-error.js";
 import type { ToolContext } from "../../src/types.js";
 
 async function _fixture(withPipe = true): Promise<{ root: string; ctx: ToolContext }> {
@@ -258,5 +259,168 @@ describe("mo2_create_mod", () => {
     const tool = getTool("mo2_create_mod")!;
 
     await expect(tool.handler({ mode: "plan", name: "NewEmpty", wins_over: "AnchorMod", profile: "BB84自用" }, ctx)).rejects.toThrow(/cross_profile_live_mutation_blocked/);
+  });
+
+  it("U4: plan refuses with a coded error when the folder already exists on disk and adopt_existing is not set", async () => {
+    const { root, ctx } = await _fixture();
+    await mkdir(join(root, "mods", "DroppedInByHand"), { recursive: true });
+    const tool = getTool("mo2_create_mod")!;
+
+    const caught = await tool.handler({ mode: "plan", name: "DroppedInByHand" }, ctx).then(() => undefined, (e: unknown) => e);
+
+    expect(caught).toBeInstanceOf(BrokerEnrichedError);
+    const err = caught as BrokerEnrichedError;
+    expect(err.code).toBe("mod_dir_exists_unregistered");
+    expect(err.message).toMatch(/adopt_existing=true/);
+    expect(err.details.existing_dir).toBe(join(root, "mods", "DroppedInByHand"));
+  });
+
+  it("U4: plan with adopt_existing against an existing folder diffs as an adoption, not a creation", async () => {
+    const { root, ctx } = await _fixture();
+    await mkdir(join(root, "mods", "DroppedInByHand"), { recursive: true });
+    const tool = getTool("mo2_create_mod")!;
+
+    const plan = await tool.handler({ mode: "plan", name: "DroppedInByHand", adopt_existing: true }, ctx) as {
+      ok: boolean;
+      result: { diff: string; affected_files: string[] };
+    };
+
+    expect(plan.ok).toBe(true);
+    expect(plan.result.diff).toBe("Adopt existing folder DroppedInByHand");
+    expect(plan.result.affected_files).toContain(join(root, "mods", "DroppedInByHand"));
+  });
+
+  it("U14: plan affected_files includes the mod directory even for a fresh (not-yet-existing) create", async () => {
+    const { root, ctx } = await _fixture();
+    const tool = getTool("mo2_create_mod")!;
+
+    const plan = await tool.handler({ mode: "plan", name: "Fresh" }, ctx) as { ok: boolean; result: { affected_files: string[] } };
+
+    expect(plan.result.affected_files).toContain(join(root, "mods", "Fresh"));
+  });
+
+  it("U2: apply throws when adopt_existing is requested but a stale broker's response claims neither adopted nor created", async () => {
+    const { ctx } = await _fixture();
+    ctx.pipeClient = {
+      call: async (method: string, params: Record<string, unknown>) => {
+        if (method === "profile.active") return { ok: true, result: { name: "Default" }, error: null };
+        if (method === "mods.create") return { ok: true, result: { name: params.name } };
+        return { ok: true, result: {} };
+      },
+      close: () => {},
+      discoverAndConnect: async () => {},
+      isConnected: () => true,
+    } as unknown as ToolContext["pipeClient"];
+    const tool = getTool("mo2_create_mod")!;
+    const plan = await tool.handler({ mode: "plan", name: "Fresh", adopt_existing: true }, ctx) as {
+      ok: boolean;
+      result: { planId: string; lease_token: string };
+    };
+
+    const caught = await tool.handler(
+      { mode: "apply", plan_id: plan.result.planId, lease_token: plan.result.lease_token },
+      ctx,
+    ).then(() => undefined, (e: unknown) => e);
+
+    expect(caught).toBeInstanceOf(BrokerEnrichedError);
+    const err = caught as BrokerEnrichedError;
+    expect(err.code).toBe("stale_broker_dropped_adopt_existing");
+    expect(err.message).toMatch(/redeploy/i);
+  });
+
+  it("U12 (TS half): apply carries the broker's error code through instead of collapsing to a generic Error", async () => {
+    const { ctx } = await _fixture();
+    ctx.pipeClient = {
+      call: async (method: string) => {
+        if (method === "profile.active") return { ok: true, result: { name: "Default" }, error: null };
+        return {
+          ok: false,
+          error: {
+            code: "mod_dir_exists_unregistered",
+            message: "mod_dir_exists_unregistered: raced",
+            details: { existing_dir: "/mods/Raced" },
+          },
+        };
+      },
+      close: () => {},
+      discoverAndConnect: async () => {},
+      isConnected: () => true,
+    } as unknown as ToolContext["pipeClient"];
+    const tool = getTool("mo2_create_mod")!;
+    const plan = await tool.handler({ mode: "plan", name: "Raced" }, ctx) as { ok: boolean; result: { planId: string; lease_token: string } };
+
+    const caught = await tool.handler(
+      { mode: "apply", plan_id: plan.result.planId, lease_token: plan.result.lease_token },
+      ctx,
+    ).then(() => undefined, (e: unknown) => e);
+
+    expect(caught).toBeInstanceOf(BrokerEnrichedError);
+    const err = caught as BrokerEnrichedError;
+    expect(err.code).toBe("mod_dir_exists_unregistered");
+    expect(err.details.existing_dir).toBe("/mods/Raced");
+  });
+
+  it("U9: apply log reports an adoption (not a creation) with the broker-confirmed priority", async () => {
+    const { root, ctx } = await _fixture();
+    await mkdir(join(root, "mods", "DroppedInByHand"), { recursive: true });
+    const pipeCalls: Array<{ method: string; params: Record<string, unknown> }> = [];
+    ctx.pipeClient = {
+      call: async (method: string, params: Record<string, unknown>) => {
+        pipeCalls.push({ method, params });
+        if (method === "profile.active") return { ok: true, result: { name: "Default" }, error: null };
+        return { ok: true, result: { name: params.name, created: false, adopted: true, priority: 9 } };
+      },
+      close: () => {},
+      discoverAndConnect: async () => {},
+      isConnected: () => true,
+    } as unknown as ToolContext["pipeClient"];
+    ctx.sidecar = {
+      call: async () => ({ invalidated: true }),
+      isReady: () => true,
+      start: async () => {},
+      stop: async () => {},
+    } as unknown as ToolContext["sidecar"];
+    const tool = getTool("mo2_create_mod")!;
+    const plan = await tool.handler({ mode: "plan", name: "DroppedInByHand", adopt_existing: true }, ctx) as {
+      ok: boolean;
+      result: { planId: string; lease_token: string };
+    };
+    await tool.handler({ mode: "apply", plan_id: plan.result.planId, lease_token: plan.result.lease_token }, ctx);
+
+    expect(pipeCalls.find((c) => c.method === "system.log_apply")?.params).toEqual(
+      expect.objectContaining({ summary: "adopted \"DroppedInByHand\" wins_over=\"none\" → priority 9" }),
+    );
+  });
+
+  it("U11: apply passes an adopt inventory through to the tool result unmodified", async () => {
+    const { root, ctx } = await _fixture();
+    await mkdir(join(root, "mods", "DroppedInByHand"), { recursive: true });
+    const inventory = { file_count: 3, total_bytes: 42, plugin_names: ["Patch.esp"] };
+    ctx.pipeClient = {
+      call: async (method: string, params: Record<string, unknown>) => {
+        if (method === "profile.active") return { ok: true, result: { name: "Default" }, error: null };
+        return { ok: true, result: { name: params.name, created: false, adopted: true, priority: 7, inventory } };
+      },
+      close: () => {},
+      discoverAndConnect: async () => {},
+      isConnected: () => true,
+    } as unknown as ToolContext["pipeClient"];
+    ctx.sidecar = {
+      call: async () => ({ invalidated: true }),
+      isReady: () => true,
+      start: async () => {},
+      stop: async () => {},
+    } as unknown as ToolContext["sidecar"];
+    const tool = getTool("mo2_create_mod")!;
+    const plan = await tool.handler({ mode: "plan", name: "DroppedInByHand", adopt_existing: true }, ctx) as {
+      ok: boolean;
+      result: { planId: string; lease_token: string };
+    };
+    const apply = await tool.handler({ mode: "apply", plan_id: plan.result.planId, lease_token: plan.result.lease_token }, ctx) as {
+      ok: boolean;
+      result: { inventory: typeof inventory };
+    };
+
+    expect(apply.result.inventory).toEqual(inventory);
   });
 });

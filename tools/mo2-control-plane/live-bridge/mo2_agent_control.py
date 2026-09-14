@@ -1305,6 +1305,31 @@ def _refresh_or_internal_error(organizer, context: str):
         )
 
 
+def _directory_inventory(absolute_path):
+    """U11: a short summary of what an adopted stale folder actually
+    contains. adopt_existing registers whatever is already on disk -- never
+    an empty mod -- so the caller needs to see what it just took ownership
+    of instead of a bare created/adopted/priority envelope."""
+
+    file_count = 0
+    total_bytes = 0
+    plugin_names = []
+    for root, _dirs, files in os.walk(absolute_path):
+        for fname in files:
+            file_count += 1
+            try:
+                total_bytes += os.path.getsize(os.path.join(root, fname))
+            except OSError:
+                pass
+            if fname.lower().endswith((".esp", ".esm", ".esl")):
+                plugin_names.append(fname)
+    return {
+        "file_count": file_count,
+        "total_bytes": total_bytes,
+        "plugin_names": sorted(plugin_names),
+    }
+
+
 def _mods_create_or_adopt_result(mod_list, name, absolute_path, created, adopted, target_priority):
     """Shared result/priority tail for mods.create's create and adopt branches.
 
@@ -1324,6 +1349,8 @@ def _mods_create_or_adopt_result(mod_list, name, absolute_path, created, adopted
         "priority": mod_list.priority(name),
         "absolute_path": absolute_path,
     }
+    if adopted:
+        result["inventory"] = _directory_inventory(absolute_path)
     if target_priority is None:
         return ("ok", result)
 
