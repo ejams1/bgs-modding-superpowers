@@ -1,9 +1,10 @@
 import { afterEach, describe, it, expect, vi } from "vitest";
-import { detectMo2Running } from "../src/detection.js";
+import { clearDetectionCache, detectMo2Running } from "../src/detection.js";
 
 describe("detectMo2Running", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+    clearDetectionCache();
   });
 
   it("returns all-false when tasklist shows no MO2 process", async () => {
@@ -46,5 +47,20 @@ describe("detectMo2Running", () => {
     });
 
     expect(result.profileLockHeld).toBe(false);
+  });
+
+  it("returns the exact same result object for back-to-back calls within the TTL (cache hit)", async () => {
+    const opts = { mo2Root: "C:\\nonexistent\\cache-test", profileDir: undefined };
+    const first = await detectMo2Running(opts);
+    const second = await detectMo2Running(opts);
+
+    expect(second).toBe(first);
+  });
+
+  it("does not share a cached result across different mo2Root values", async () => {
+    const first = await detectMo2Running({ mo2Root: "C:\\nonexistent\\cache-test-a", profileDir: undefined });
+    const second = await detectMo2Running({ mo2Root: "C:\\nonexistent\\cache-test-b", profileDir: undefined });
+
+    expect(second).not.toBe(first);
   });
 });

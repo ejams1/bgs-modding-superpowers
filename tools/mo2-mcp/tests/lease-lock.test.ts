@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -6,6 +6,7 @@ import {
   acquireLeaseLock,
   acquireLeasesForTargets,
   computeLeaseTargetHash,
+  isPidAlive,
   leaseLockPath,
   releaseLeaseLock,
   releaseLeaseLocks,
@@ -31,6 +32,43 @@ function metadata(overrides: Partial<LeaseLockMetadata> = {}): LeaseLockMetadata
     ...overrides,
   };
 }
+
+describe("isPidAlive", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("rejects non-positive or non-integer pids without touching process.kill", async () => {
+    const killSpy = vi.spyOn(process, "kill");
+    await expect(isPidAlive(0)).resolves.toBe(false);
+    await expect(isPidAlive(-5)).resolves.toBe(false);
+    await expect(isPidAlive(1.5)).resolves.toBe(false);
+    expect(killSpy).not.toHaveBeenCalled();
+  });
+
+  it("resolves true when process.kill(pid, 0) succeeds (pid alive)", async () => {
+    vi.spyOn(process, "kill").mockImplementation(() => true);
+    await expect(isPidAlive(4242)).resolves.toBe(true);
+  });
+
+  it("resolves false when process.kill throws ESRCH (pid dead)", async () => {
+    vi.spyOn(process, "kill").mockImplementation(() => {
+      const error = new Error("kill ESRCH") as NodeJS.ErrnoException;
+      error.code = "ESRCH";
+      throw error;
+    });
+    await expect(isPidAlive(4242)).resolves.toBe(false);
+  });
+
+  it("resolves true when process.kill throws EPERM (pid alive, inaccessible)", async () => {
+    vi.spyOn(process, "kill").mockImplementation(() => {
+      const error = new Error("kill EPERM") as NodeJS.ErrnoException;
+      error.code = "EPERM";
+      throw error;
+    });
+    await expect(isPidAlive(4242)).resolves.toBe(true);
+  });
+});
 
 describe("lease-lock", () => {
   it("hashes sorted target paths only", () => {
