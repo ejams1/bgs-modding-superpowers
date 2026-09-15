@@ -21,12 +21,31 @@ vi.mock("node:timers/promises", () => ({
   setTimeout: vi.fn(async () => undefined),
 }));
 
+// Phase A (L4 tier 2) now polls `system.describe` over the same adapter Phase B
+// already polls `files.list` over. Tests that don't care about Phase A specifically
+// get the old always-ready behavior for free (systemDescribeHandler unset); tests
+// that do care install a handler to control per-poll success/failure/timing.
+let systemDescribeHandler:
+  | (() => Promise<{ ok: boolean; result?: unknown; error?: { code: string; message: string } }>)
+  | null = null;
+let systemDescribeCallCount = 0;
+
+async function mockAdapterCall(call: { command: string; args?: unknown }) {
+  if (call.command === "system.describe") {
+    systemDescribeCallCount += 1;
+    if (systemDescribeHandler) return systemDescribeHandler();
+    return { ok: true, result: {} };
+  }
+  // files.list (Phase B) and anything else: keep the original always-ready shape.
+  return { ok: true, result: { files: ["Dummy.esm"] } };
+}
+
 vi.mock("../../src/daemon-adapter.js", () => ({
   createPowershellAdapter: vi.fn(() => ({
-    call: vi.fn(async () => ({ ok: true, result: { files: ["Dummy.esm"] } })),
+    call: vi.fn((call: { command: string; args?: unknown }) => mockAdapterCall(call)),
   })),
   createNativeAdapter: vi.fn(() => ({
-    call: vi.fn(async () => ({ ok: true, result: { files: ["Dummy.esm"] } })),
+    call: vi.fn((call: { command: string; args?: unknown }) => mockAdapterCall(call)),
   })),
 }));
 
@@ -64,6 +83,8 @@ describe("launchDaemon readiness-timeout cleanup", () => {
     processWaitStatus = "running";
     stuckLaunchSpawn = false;
     delete process.env.BGS_XEDIT_FORCE_PWSH_ADAPTER;
+    systemDescribeHandler = null;
+    systemDescribeCallCount = 0;
     vi.resetModules();
     // vi.mock factories are cached across resetModules(), so the createNativeAdapter/
     // createPowershellAdapter spies persist call history between tests — clear it so
@@ -310,6 +331,97 @@ describe("launchDaemon readiness-timeout cleanup", () => {
         }),
       );
       expect(createNativeAdapter).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("Phase A readiness probe (L4 tier 2)", () => {
+    it("resolves Phase A on the first successful system.describe poll with no retries", async () => {
+      const { launchDaemon } = await import("../../src/launch.js");
+
+      const daemon = await launchDaemon({
+        clientScript: "D:/awesome-bgs-mod-master/tools/mo2-vfs-launcher/xedit-client.ps1",
+        launcherPath: "D:/awesome-bgs-mod-master/.artifacts/mo2/Stock Game/Fallout 4/Tools/OpenCodeXEdit/xEdit.exe",
+        gameMode: "Fallout4",
+        moProfile: "Default",
+        readyTimeoutMs: 10_000,
+      });
+
+      expect(daemon.pid).toBe(4242);
+      expect(systemDescribeCallCount).toBe(1);
+      // Phase A no longer spawns pwsh at all (that hop moved to adapter.call, which
+      // is mocked here) — only the outer `process launch` spawn should appear.
+      expect(spawnCalls).toHaveLength(1);
+      expect(spawnCalls[0]?.args).toContain("launch");
+    });
+
+    it("retries adapter.call failures before eventually reaching readiness", async () => {
+      const { launchDaemon } = await import("../../src/launch.js");
+
+      let attempt = 0;
+      systemDescribeHandler = async () => {
+        attempt += 1;
+        if (attempt < 3) throw new Error("pipe not found");
+        return { ok: true, result: {} };
+      };
+
+      const daemon = await launchDaemon({
+        clientScript: "D:/awesome-bgs-mod-master/tools/mo2-vfs-launcher/xedit-client.ps1",
+        launcherPath: "D:/awesome-bgs-mod-master/.artifacts/mo2/Stock Game/Fallout 4/Tools/OpenCodeXEdit/xEdit.exe",
+        gameMode: "Fallout4",
+        moProfile: "Default",
+        readyTimeoutMs: 10_000,
+      });
+
+      expect(daemon.pid).toBe(4242);
+      expect(systemDescribeCallCount).toBe(3);
+    });
+
+    it("surfaces the last adapter.call error in the Daemon-not-ready message on total timeout", async () => {
+      const { launchDaemon } = await import("../../src/launch.js");
+
+      systemDescribeHandler = async () => {
+        throw new Error("pipe not found");
+      };
+
+      await expect(
+        launchDaemon({
+          clientScript: "D:/awesome-bgs-mod-master/tools/mo2-vfs-launcher/xedit-client.ps1",
+          launcherPath: "D:/awesome-bgs-mod-master/.artifacts/mo2/Stock Game/Fallout 4/Tools/OpenCodeXEdit/xEdit.exe",
+          gameMode: "Fallout4",
+          moProfile: "Default",
+          readyTimeoutMs: 50,
+        }),
+      ).rejects.toThrow(/Daemon not ready within 50 ms \(pid=4242\)\..*pipe not found/s);
+
+      expect(systemDescribeCallCount).toBeGreaterThan(0);
+      // Still stopped best-effort, same as the pre-existing pwsh-based timeout path.
+      expect(spawnCalls.some((call) => call.args.includes("stop"))).toBe(true);
+    });
+
+    it("throws LaunchAbortedError when the signal aborts mid Phase-A polling", async () => {
+      const { launchDaemon, LaunchAbortedError } = await import("../../src/launch.js");
+      const controller = new AbortController();
+
+      systemDescribeHandler = async () => {
+        // Simulate xedit_stop firing while Phase A is between polls: abort here,
+        // then fail this attempt too — the loop's abort check on the *next*
+        // iteration must win before any further adapter.call happens.
+        controller.abort();
+        throw new Error("pipe not found");
+      };
+
+      await expect(
+        launchDaemon({
+          clientScript: "D:/awesome-bgs-mod-master/tools/mo2-vfs-launcher/xedit-client.ps1",
+          launcherPath: "D:/awesome-bgs-mod-master/.artifacts/mo2/Stock Game/Fallout 4/Tools/OpenCodeXEdit/xEdit.exe",
+          gameMode: "Fallout4",
+          moProfile: "Default",
+          readyTimeoutMs: 10_000,
+          signal: controller.signal,
+        }),
+      ).rejects.toBeInstanceOf(LaunchAbortedError);
+
+      expect(systemDescribeCallCount).toBe(1);
     });
   });
 });
