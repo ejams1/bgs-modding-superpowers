@@ -250,8 +250,7 @@ const handler: PlanApplyHandler = {
 registerTool({
   name: "mo2_configure_executable",
   tier: "T3",
-  description:
-    "Add/edit/remove a customExecutables entry. Refuses if MO2 running. Atomic INI rewrite preserves other sections.",
+  description: "Add/edit/remove a customExecutables entry. Refuses while MO2 is running.",
   inputSchema,
   handler: (args, ctx) =>
     routeToPlanApply(handler, args, ctx, ctx.plans, ctx.snapshots) as Promise<unknown>,

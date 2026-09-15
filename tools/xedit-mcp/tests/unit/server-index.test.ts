@@ -242,6 +242,7 @@ describe("xedit-mcp stdio server TOOL_DEFINITIONS", () => {
     expect(Object.keys(schema.properties).sort()).toEqual([
       "baseDisplayNameRegex",
       "baseEditorIdRegex",
+      "compact",
       "displayNameRegex",
       "displayNamePattern",
       "drainAll",
@@ -250,6 +251,7 @@ describe("xedit-mcp stdio server TOOL_DEFINITIONS", () => {
       "file",
       "fullNameRegex",
       "limit",
+      "maxMatches",
       "offset",
       "parentFormId",
       "signatures",

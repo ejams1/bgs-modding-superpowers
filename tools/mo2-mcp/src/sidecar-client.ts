@@ -94,6 +94,14 @@ export class SidecarClient {
   private stopping = false;
   private permanentFailed = false;
   private lastExitReason?: string;
+  /**
+   * Resolvers for in-flight launch() calls, invoked directly by onData()
+   * when the `{"ready": true}` line arrives instead of via a polling loop.
+   * A Set (rather than a single field) so concurrent launch() calls — e.g. a
+   * fresh start() racing an in-flight auto-restart — each still get notified
+   * independently, matching the old poll-on-shared-flag behaviour.
+   */
+  private readyCallbacks = new Set<() => void>();
 
   async start(opts: SidecarStartOptions): Promise<void> {
     this.lastStartOptions = { ...opts };
@@ -135,12 +143,14 @@ export class SidecarClient {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
+        this.readyCallbacks.delete(finishResolve);
         resolve();
       };
       const finishReject = (err: Error): void => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
+        this.readyCallbacks.delete(finishResolve);
         reject(err);
       };
       const timer = setTimeout(() => {
@@ -156,15 +166,11 @@ export class SidecarClient {
         }
       });
 
-      const checkReady = (): void => {
-        if (settled) return;
-        if (this.ready) {
-          finishResolve();
-          return;
-        }
-        setTimeout(checkReady, 50);
-      };
-      checkReady();
+      if (this.ready) {
+        finishResolve();
+        return;
+      }
+      this.readyCallbacks.add(finishResolve);
     });
   }
 
@@ -201,6 +207,8 @@ export class SidecarClient {
       }
       if (msg.ready === true) {
         this.ready = true;
+        for (const cb of this.readyCallbacks) cb();
+        this.readyCallbacks.clear();
         continue;
       }
       if (typeof msg.id !== "number") continue;

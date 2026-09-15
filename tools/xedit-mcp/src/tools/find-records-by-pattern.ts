@@ -48,6 +48,17 @@ const Args = z
       .optional(),
     offset: z.number().int().nonnegative().optional(),
     drainAll: z.boolean().optional(),
+    // L9 fix (2026-09-14): compact drops everything but locator + editorId
+    // from each match (file/formId/path/editorId), applied to both the
+    // single-call and drainAll paths. maxMatches raises drainAll's default
+    // 500-match safety cap — callers must opt in explicitly to go higher.
+    compact: z.boolean().optional(),
+    maxMatches: z
+      .number()
+      .int()
+      .positive()
+      .max(5000, { message: "maxMatches must be 1..5000" })
+      .optional(),
   })
   .refine(
     (data) => {
@@ -116,6 +127,23 @@ function wrapFileAsFiles(args: Record<string, unknown>): Record<string, unknown>
 function stripMcpOnlyArgs(args: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = { ...args };
   delete out.drainAll;
+  delete out.compact;
+  delete out.maxMatches;
+  return out;
+}
+
+/**
+ * compact mode (L9 fix): reduce a normalized match to locator + EditorID
+ * only — file/formId/path (the locator) plus editorId if present. Drops
+ * signature and displayName, which are the bulk of per-match token cost
+ * when draining thousands of matches.
+ */
+function compactMatch(entry: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  if ("file" in entry) out.file = entry.file;
+  if ("formId" in entry) out.formId = entry.formId;
+  if ("path" in entry) out.path = entry.path;
+  if ("editorId" in entry) out.editorId = entry.editorId;
   return out;
 }
 
@@ -191,6 +219,7 @@ export function makeFindRecordsByPatternHandler(opts: FindRecordsByPatternOption
     const parsedArgs = Args.parse(args);
     const daemonArgsBase = wrapFileAsFiles(stripParentFormIdPrefix(stripMcpOnlyArgs(args)));
     const drainAll = parsedArgs.drainAll === true;
+    const compact = parsedArgs.compact === true;
 
     if (drainAll) {
       const pageLimit = parsedArgs.limit ?? 100;
@@ -204,7 +233,10 @@ export function makeFindRecordsByPatternHandler(opts: FindRecordsByPatternOption
       let lastOffset: number | undefined;
       const matches: Array<Record<string, unknown>> = [];
       const maxPages = 20;
-      const maxMatches = 2000;
+      // L9 fix (2026-09-14): default drain cap lowered from 2000 to 500;
+      // callers must pass an explicit maxMatches to go higher (capped at 5000
+      // by the Args schema above).
+      const maxMatches = parsedArgs.maxMatches ?? 500;
 
       while (true) {
         const pageArgs = {
@@ -235,7 +267,7 @@ export function makeFindRecordsByPatternHandler(opts: FindRecordsByPatternOption
         lastOffset = page.offset;
         for (const match of page.matches) {
           if (matches.length >= maxMatches) break;
-          matches.push(match);
+          matches.push(compact ? compactMatch(match) : match);
         }
         finalNextOffset = page.nextOffset;
 
@@ -265,7 +297,7 @@ export function makeFindRecordsByPatternHandler(opts: FindRecordsByPatternOption
       if (typeof lastLimit === "number") data.limit = lastLimit;
       if (drainCapped) {
         data.drainCapped = true;
-        data.drainCapNote = "drainAll stopped at the hard safety cap (20 pages / 2000 matches); continue manually from nextOffset.";
+        data.drainCapNote = `drainAll stopped at the hard safety cap (20 pages / ${maxMatches} matches); pass an explicit maxMatches to raise the match cap (up to 5000), or continue manually from nextOffset.`;
         if (typeof finalNextOffset === "number") data.nextOffset = finalNextOffset;
       }
 
@@ -309,13 +341,14 @@ export function makeFindRecordsByPatternHandler(opts: FindRecordsByPatternOption
     //     matchCount, truncated?, regexSlotsExhausted? }
     // Older shape used `hits`. Accept both.
     const result = normalizeResult(native.result);
+    const outMatches = compact ? result.matches.map(compactMatch) : result.matches;
 
     const env = okEnv({
       tool: "xedit_find_records_by_pattern",
       summary: `apply_filter returned ${result.matches.length} match${result.matches.length === 1 ? "" : "es"}`,
       status: "completed",
       data: {
-        matches: result.matches,
+        matches: outMatches,
         matchCount:
           typeof result.matchCount === "number" ? result.matchCount : result.matches.length,
         truncated: result.truncated === true,

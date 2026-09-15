@@ -173,4 +173,65 @@ describe("mo2_search_files", () => {
     expect(result.ok).toBe(true);
     expect(result.result.results).toContain("ModA/textures/foo.dds");
   });
+
+  describe("paging + compact (L9)", () => {
+    it("defaults to limit 100 over the collected (max_results-capped) hits", async () => {
+      const ctx = await _fixture();
+      const tool = getTool("mo2_search_files")!;
+      const result = (await tool.handler({ pattern: "**/*.*", max_results: 3 }, ctx)) as {
+        ok: boolean;
+        result: { results: string[]; count: number; total: number; limit: number; offset: number; truncated: boolean };
+      };
+      expect(result.ok).toBe(true);
+      // max_results=3 caps the walk itself; limit defaults to 100 so the
+      // whole (walk-capped) collection is returned in one page.
+      expect(result.result.total).toBe(3);
+      expect(result.result.count).toBe(3);
+      expect(result.result.limit).toBe(100);
+      expect(result.result.truncated).toBe(true); // walk-level truncation
+    });
+
+    it("pages the response separately from the walk cap via limit/offset", async () => {
+      const ctx = await _fixture();
+      const tool = getTool("mo2_search_files")!;
+      const result = (await tool.handler(
+        { pattern: "**/*.*", max_results: 1000, limit: 1, offset: 0 },
+        ctx,
+      )) as {
+        ok: boolean;
+        result: { results: string[]; count: number; total: number; truncated: boolean; nextOffset?: number };
+      };
+      expect(result.ok).toBe(true);
+      expect(result.result.results).toHaveLength(1);
+      expect(result.result.count).toBe(1);
+      expect(result.result.total).toBeGreaterThan(1);
+      expect(result.result.truncated).toBe(true);
+      expect(result.result.nextOffset).toBe(1);
+    });
+
+    it("reports untruncated once offset+limit reaches the total", async () => {
+      const ctx = await _fixture();
+      const tool = getTool("mo2_search_files")!;
+      const result = (await tool.handler(
+        { pattern: "**/*.esp", max_results: 1000, limit: 100, offset: 0 },
+        ctx,
+      )) as { ok: boolean; result: { results: string[]; truncated: boolean; nextOffset?: number } };
+      expect(result.ok).toBe(true);
+      expect(result.result.truncated).toBe(false);
+      expect(result.result.nextOffset).toBeUndefined();
+    });
+
+    it("compact=true groups results by mod instead of repeating the mod-name prefix", async () => {
+      const ctx = await _fixture();
+      const tool = getTool("mo2_search_files")!;
+      const result = (await tool.handler(
+        { pattern: "**/*.*", max_results: 1000, compact: true },
+        ctx,
+      )) as { ok: boolean; result: { results: Record<string, string[]> } };
+      expect(result.ok).toBe(true);
+      expect(Array.isArray(result.result.results)).toBe(false);
+      expect(result.result.results.ModA).toContain("Data/foo.esp");
+      expect(result.result.results.ModB).toContain("baz.esp");
+    });
+  });
 });

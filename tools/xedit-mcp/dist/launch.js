@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { setTimeout as sleep } from "node:timers/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { createPowershellAdapter } from "./daemon-adapter.js";
+import { createNativeAdapter, createPowershellAdapter } from "./daemon-adapter.js";
 export async function waitForManagedProcessExit(opts) {
     const run = opts.run ?? runPwshCapture;
     const timeoutSeconds = Math.max(1, Math.ceil(opts.timeoutMs / 1_000));
@@ -110,29 +110,45 @@ export async function launchDaemon(opts) {
             throw new Error(`xedit-client process launch returned no pid: ${launchOut.slice(0, 600)}`);
         }
         const launchedPid = pid;
-        // Phase A: process wait until the daemon answers (or refuses with exited).
+        // L4 tier 1: default to the direct xEdit.exe spawn (no pwsh hop). The pwsh-hop
+        // adapter is kept as a fallback for one release — set BGS_XEDIT_FORCE_PWSH_ADAPTER
+        // to any truthy value to force it if the native path misbehaves in the field.
+        // Constructed here (before Phase A) so both the readiness probe below and the
+        // Phase B plugin-load poll share the same adapter — see finding L4 tier 2 in
+        // docs/internal/reviews/2026-09-14-inherited-project-review.md.
+        const adapter = process.env.BGS_XEDIT_FORCE_PWSH_ADAPTER
+            ? createPowershellAdapter({
+                clientScript: opts.clientScript,
+                pid: launchedPid,
+                scratchDir: join(tmpdir(), "xedit-mcp-calls", String(launchedPid)),
+                pwshExe: pwsh,
+            })
+            : createNativeAdapter({
+                xeditExecutable: opts.launcherPath,
+                pid: launchedPid,
+                scratchDir: join(tmpdir(), "xedit-mcp-calls", String(launchedPid)),
+            });
+        // Phase A: poll system.describe over the adapter until the daemon answers ready.
+        // L4 tier 2: this used to spawn pwsh for a `process wait` call every ~750ms just
+        // to confirm the daemon hadn't exited yet, paying the pwsh-hop cost on every
+        // readiness poll. system.describe is the daemon's cheapest liveness/readiness
+        // call (already used identically in session.ts's post-launch summary and
+        // confirmed as the "process launch returns as soon as the daemon accepts a pipe
+        // connection (system.describe ok)" signal per this function's own doc comment
+        // above) — polling it through the adapter reuses the connection path Phase B
+        // already relies on instead of shelling out separately.
         let dwReady = false;
         let lastWaitErr;
         while (Date.now() < deadline) {
             if (opts.signal?.aborted)
                 throw new LaunchAbortedError();
             try {
-                const waitOut = await runPwshCapture(pwsh, [
-                    "-NoProfile",
-                    "-File",
-                    opts.clientScript,
-                    "process",
-                    "wait",
-                    "--xedit-pid",
-                    String(launchedPid),
-                    "--timeout-seconds",
-                    "1",
-                ], undefined, opts.signal);
-                if (!/^status:\s*exited\s*$/im.test(waitOut)) {
+                const res = await adapter.call({ command: "system.describe", args: {} });
+                if (res.ok) {
                     dwReady = true;
                     break;
                 }
-                lastWaitErr = new Error(`Daemon exited before readiness confirmation: ${waitOut.slice(0, 400)}`);
+                lastWaitErr = new Error(`Daemon reported not-ok for system.describe: ${JSON.stringify(res).slice(0, 400)}`);
             }
             catch (err) {
                 if (err instanceof LaunchAbortedError)
@@ -145,12 +161,6 @@ export async function launchDaemon(opts) {
             const detail = lastWaitErr instanceof Error ? ` Last error: ${lastWaitErr.message}` : "";
             throw new Error(`Daemon not ready within ${opts.readyTimeoutMs ?? 180_000} ms (pid=${launchedPid}).${detail}`);
         }
-        const adapter = createPowershellAdapter({
-            clientScript: opts.clientScript,
-            pid: launchedPid,
-            scratchDir: join(tmpdir(), "xedit-mcp-calls", String(launchedPid)),
-            pwshExe: pwsh,
-        });
         // Phase B: poll files.list until it reports a non-empty load order.
         // xEdit may serve the pipe before plugin load completes; this guards against the race.
         let lastFilesCount = 0;

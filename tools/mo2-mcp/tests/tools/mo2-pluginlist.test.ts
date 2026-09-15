@@ -118,4 +118,68 @@ describe("mo2_pluginlist", () => {
     expect(result.result._meta.array_order_note).toContain("TOP of MO2 GUI plugins panel");
     expect(result.result._meta.enabled_marker).toContain("plugin_count includes the comment header entry");
   });
+
+  describe("paging (L9)", () => {
+    async function _buildManyPluginCtx(n: number): Promise<ToolContext> {
+      const root = await createTrackedTempDir("mo2-pl-many-");
+      await mkdir(join(root, "profiles", "Default"), { recursive: true });
+      await writeFile(join(root, "profiles", "Default", "modlist.txt"), "", "utf8");
+      const lines = Array.from({ length: n }, (_, i) => `*Plugin${String(i).padStart(3, "0")}.esp`);
+      await writeFile(join(root, "profiles", "Default", "plugins.txt"), lines.join("\n") + "\n", "utf8");
+      return {
+        config: {
+          mo2Root: root,
+          permissionCeiling: "metadata-editable",
+          allowedProfiles: ["Default"],
+          deny: [],
+          snapshotRoot: join(root, ".mo2-mcp", "snapshots"),
+          auditRoot: join(root, ".mo2-mcp", "audit"),
+        },
+        sessionId: "test",
+        plans: new PlanCache(),
+        snapshots: new SnapshotManager(join(root, ".mo2-mcp", "snapshots"), "test"),
+        audit: new AuditLogger(join(root, ".mo2-mcp", "audit"), "test"),
+      };
+    }
+
+    it("defaults to limit 100 and reports truncated + nextOffset when more remain", async () => {
+      const ctx = await _buildManyPluginCtx(150);
+      const tool = getTool("mo2_pluginlist")!;
+      const result = (await tool.handler({}, ctx)) as {
+        result: { plugins: unknown[]; plugin_count: number; limit: number; offset: number; truncated: boolean; nextOffset?: number };
+      };
+      expect(result.result.plugins).toHaveLength(100);
+      expect(result.result.plugin_count).toBe(150);
+      expect(result.result.limit).toBe(100);
+      expect(result.result.truncated).toBe(true);
+      expect(result.result.nextOffset).toBe(100);
+    });
+
+    it("pages a second window via offset", async () => {
+      const ctx = await _buildManyPluginCtx(150);
+      const tool = getTool("mo2_pluginlist")!;
+      const result = (await tool.handler({ offset: 100, limit: 100 }, ctx)) as {
+        result: { plugins: unknown[]; truncated: boolean; nextOffset?: number };
+      };
+      expect(result.result.plugins).toHaveLength(50);
+      expect(result.result.truncated).toBe(false);
+      expect(result.result.nextOffset).toBeUndefined();
+    });
+
+    it("compact=true trims real plugin rows to name/enabled/gui_rank", async () => {
+      const ctx = await _buildCtx();
+      const tool = getTool("mo2_pluginlist")!;
+      const result = (await tool.handler({ compact: true }, ctx)) as {
+        result: { plugins: Array<Record<string, unknown>> };
+      };
+      const real = result.result.plugins.filter((p) => !p.isComment);
+      expect(real.length).toBeGreaterThan(0);
+      for (const pl of real) {
+        expect(Object.keys(pl).sort()).toEqual(["enabled", "gui_rank", "name"]);
+      }
+      const comment = result.result.plugins.find((p) => p.isComment);
+      expect(comment).toMatchObject({ isComment: true });
+      expect(Object.keys(comment as Record<string, unknown>).sort()).toEqual(["enabled", "isComment", "name"]);
+    });
+  });
 });

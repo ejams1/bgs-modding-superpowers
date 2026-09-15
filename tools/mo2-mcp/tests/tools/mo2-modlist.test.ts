@@ -127,4 +127,59 @@ describe("mo2_modlist", () => {
     const result = (await tool.handler({ enrich: true }, ctx)) as { ok: boolean };
     expect(result.ok).toBe(true);
   });
+
+  describe("paging (L9)", () => {
+    async function _buildManyModCtx(n: number): Promise<ToolContext> {
+      const lines = Array.from({ length: n }, (_, i) => `+Mod${String(i).padStart(3, "0")}`);
+      const { ctx } = await _buildCtx(lines.join("\n") + "\n");
+      return ctx;
+    }
+
+    it("defaults to limit 100 and reports truncated + nextOffset when more remain", async () => {
+      const ctx = await _buildManyModCtx(150);
+      const tool = getTool("mo2_modlist")!;
+      const result = (await tool.handler({}, ctx)) as {
+        result: { mods: unknown[]; mod_count: number; limit: number; offset: number; truncated: boolean; nextOffset?: number };
+      };
+      expect(result.result.mods).toHaveLength(100);
+      expect(result.result.mod_count).toBe(150);
+      expect(result.result.limit).toBe(100);
+      expect(result.result.offset).toBe(0);
+      expect(result.result.truncated).toBe(true);
+      expect(result.result.nextOffset).toBe(100);
+    });
+
+    it("pages a second window via offset and stops signalling truncated once exhausted", async () => {
+      const ctx = await _buildManyModCtx(150);
+      const tool = getTool("mo2_modlist")!;
+      const result = (await tool.handler({ offset: 100, limit: 100 }, ctx)) as {
+        result: { mods: unknown[]; truncated: boolean; nextOffset?: number };
+      };
+      expect(result.result.mods).toHaveLength(50);
+      expect(result.result.truncated).toBe(false);
+      expect(result.result.nextOffset).toBeUndefined();
+    });
+
+    it("small modlists under the default limit are returned in full, untruncated", async () => {
+      const { ctx } = await _buildCtx();
+      const tool = getTool("mo2_modlist")!;
+      const result = (await tool.handler({}, ctx)) as {
+        result: { mods: unknown[]; mod_count: number; truncated: boolean };
+      };
+      expect(result.result.mods).toHaveLength(4);
+      expect(result.result.mod_count).toBe(4);
+      expect(result.result.truncated).toBe(false);
+    });
+
+    it("compact=true trims each row to name/priority/enabled/is_separator", async () => {
+      const { ctx } = await _buildCtx();
+      const tool = getTool("mo2_modlist")!;
+      const result = (await tool.handler({ compact: true }, ctx)) as {
+        result: { mods: Array<Record<string, unknown>> };
+      };
+      for (const mod of result.result.mods) {
+        expect(Object.keys(mod).sort()).toEqual(["enabled", "is_separator", "name", "priority"]);
+      }
+    });
+  });
 });

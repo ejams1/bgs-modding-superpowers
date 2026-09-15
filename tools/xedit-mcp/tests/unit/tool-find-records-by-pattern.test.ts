@@ -341,4 +341,162 @@ describe("xedit_find_records_by_pattern tool", () => {
     expect(data.nextOffset).toBe(20);
     expect(data.drainCapNote).toContain("20 pages");
   });
+
+  it("drainAll stops at the default 500-match cap without an explicit maxMatches", async () => {
+    const baseDir = createTrackedTempDirSync("xedit-mcp-fbp-drain-matchcap-");
+    const audit = createAuditLogger({ baseDir });
+    const forwarded: Array<Record<string, unknown>> = [];
+    // 50 matches/page, always truncated=true with a nextOffset — an
+    // effectively unbounded stream. At 50/page the 500-match cap is hit at
+    // page 10, well inside the 20-page cap (which would otherwise allow
+    // 20*50=1000 matches) — proving the 500-match cap is what stops the
+    // drain here, not maxPages.
+    const adapter = makeMockAdapter({
+      "records.apply_filter": (args) => {
+        forwarded.push(args);
+        const offset = typeof args.offset === "number" ? args.offset : 0;
+        const matches = Array.from({ length: 50 }, (_, i) => ({
+          file: "Patch.esp",
+          formId: (offset + i).toString(16).padStart(8, "0"),
+          signature: "REFR",
+        }));
+        return { matches, matchCount: matches.length, truncated: true, offset, limit: 50, nextOffset: offset + 50 };
+      },
+    });
+    const handler = makeFindRecordsByPatternHandler({
+      adapter,
+      registry: defaultRegistry(),
+      audit,
+      getContext: () => ctx,
+    });
+
+    const env = await handler({ file: "Patch.esp", signatures: ["REFR"], limit: 50, drainAll: true });
+
+    expect(env.ok).toBe(true);
+    if (!env.ok) throw new Error("expected ok");
+    const data = env.data as { matches: unknown[]; drainCapped?: boolean };
+    expect(data.matches).toHaveLength(500);
+    expect(data.drainCapped).toBe(true);
+    expect(forwarded).toHaveLength(10);
+  });
+
+  it("maxMatches raises the drain cap above the 500 default when explicitly passed", async () => {
+    const baseDir = createTrackedTempDirSync("xedit-mcp-fbp-drain-maxmatches-");
+    const audit = createAuditLogger({ baseDir });
+    const adapter = makeMockAdapter({
+      "records.apply_filter": (args) => {
+        const offset = typeof args.offset === "number" ? args.offset : 0;
+        const matches = Array.from({ length: 100 }, (_, i) => ({
+          file: "Patch.esp",
+          formId: (offset + i).toString(16).padStart(8, "0"),
+          signature: "REFR",
+        }));
+        return { matches, matchCount: matches.length, truncated: true, offset, limit: 100, nextOffset: offset + 100 };
+      },
+    });
+    const handler = makeFindRecordsByPatternHandler({
+      adapter,
+      registry: defaultRegistry(),
+      audit,
+      getContext: () => ctx,
+    });
+
+    const env = await handler({
+      file: "Patch.esp",
+      signatures: ["REFR"],
+      limit: 100,
+      drainAll: true,
+      maxMatches: 1500,
+    });
+
+    expect(env.ok).toBe(true);
+    if (!env.ok) throw new Error("expected ok");
+    const data = env.data as { matches: unknown[]; drainCapped?: boolean; drainCapNote?: string };
+    // 20-page cap (maxPages) would stop at 2000 matches; maxMatches=1500
+    // stops the drain first.
+    expect(data.matches).toHaveLength(1500);
+    expect(data.drainCapped).toBe(true);
+    expect(data.drainCapNote).toContain("1500");
+  });
+
+  it("rejects maxMatches above the 5000 hard ceiling", async () => {
+    const baseDir = createTrackedTempDirSync("xedit-mcp-fbp-maxmatches-ceiling-");
+    const audit = createAuditLogger({ baseDir });
+    const handler = makeFindRecordsByPatternHandler({
+      adapter: makeMockAdapter({}),
+      registry: defaultRegistry(),
+      audit,
+      getContext: () => ctx,
+    });
+
+    const env = await handler({
+      file: "Patch.esp",
+      signatures: ["REFR"],
+      drainAll: true,
+      maxMatches: 5001,
+    });
+
+    expect(env.ok).toBe(false);
+    if (env.ok) throw new Error("expected refusal");
+    expect(env.code).toBe("invalid_request");
+  });
+
+  it("compact=true reduces single-page matches to locator + editorId only", async () => {
+    const baseDir = createTrackedTempDirSync("xedit-mcp-fbp-compact-");
+    const audit = createAuditLogger({ baseDir });
+    const adapter = makeMockAdapter({
+      "records.apply_filter": () => ({
+        matches: [
+          {
+            locator: { file: "Patch.esp", formId: "01000001", path: "REFR\\01000001" },
+            object: { signature: "REFR", editorId: "IronTest", displayName: "Iron Bar" },
+          },
+        ],
+        matchCount: 1,
+      }),
+    });
+    const handler = makeFindRecordsByPatternHandler({
+      adapter,
+      registry: defaultRegistry(),
+      audit,
+      getContext: () => ctx,
+    });
+
+    const env = await handler({ file: "Patch.esp", signatures: ["REFR"], compact: true });
+
+    expect(env.ok).toBe(true);
+    if (!env.ok) throw new Error("expected ok");
+    const data = env.data as { matches: Array<Record<string, unknown>> };
+    expect(data.matches).toHaveLength(1);
+    expect(Object.keys(data.matches[0]).sort()).toEqual(["editorId", "file", "formId", "path"]);
+    expect(data.matches[0]).toMatchObject({ file: "Patch.esp", formId: "01000001", editorId: "IronTest" });
+  });
+
+  it("compact=true also applies to drainAll's aggregated matches", async () => {
+    const baseDir = createTrackedTempDirSync("xedit-mcp-fbp-compact-drain-");
+    const audit = createAuditLogger({ baseDir });
+    const adapter = makeMockAdapter({
+      "records.apply_filter": () => ({
+        matches: [
+          { file: "Patch.esp", formId: "01000001", signature: "REFR", editorId: "IronTest", displayName: "Iron Bar" },
+        ],
+        matchCount: 1,
+        truncated: false,
+      }),
+    });
+    const handler = makeFindRecordsByPatternHandler({
+      adapter,
+      registry: defaultRegistry(),
+      audit,
+      getContext: () => ctx,
+    });
+
+    const env = await handler({ file: "Patch.esp", signatures: ["REFR"], drainAll: true, compact: true });
+
+    expect(env.ok).toBe(true);
+    if (!env.ok) throw new Error("expected ok");
+    const data = env.data as { matches: Array<Record<string, unknown>> };
+    expect(data.matches).toHaveLength(1);
+    expect(Object.keys(data.matches[0]).sort()).toEqual(["editorId", "file", "formId"]);
+  });
 });
