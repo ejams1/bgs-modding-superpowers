@@ -68,6 +68,65 @@ describe("atomicWriteText", () => {
   });
 });
 
+describe("atomicWriteText profile line endings", () => {
+  it.each(["modlist.txt", "plugins.txt", "loadorder.txt", "archives.txt"])(
+    "keeps CRLF in an existing %s when given LF content",
+    async (name) => {
+      const { atomicWriteText } = await loadAtomic();
+      const dir = await createTrackedTempDir("atom-");
+      const target = join(dir, name);
+      await writeFile(target, "+A\r\n+B\r\n", "utf8");
+
+      await atomicWriteText(target, "+A\n+C\n");
+
+      expect(await readFile(target, "utf8")).toBe("+A\r\n+C\r\n");
+    },
+  );
+
+  it("keeps LF in an existing LF modlist.txt", async () => {
+    const { atomicWriteText } = await loadAtomic();
+    const dir = await createTrackedTempDir("atom-");
+    const target = join(dir, "modlist.txt");
+    await writeFile(target, "+A\n", "utf8");
+
+    await atomicWriteText(target, "+A\r\n+B\r\n");
+
+    expect(await readFile(target, "utf8")).toBe("+A\n+B\n");
+  });
+
+  it("does not double the CR when content is already CRLF", async () => {
+    const { atomicWriteText } = await loadAtomic();
+    const dir = await createTrackedTempDir("atom-");
+    const target = join(dir, "modlist.txt");
+    await writeFile(target, "+A\r\n", "utf8");
+
+    await atomicWriteText(target, "+A\r\n+B\r\n");
+
+    expect(await readFile(target, "utf8")).toBe("+A\r\n+B\r\n");
+  });
+
+  it("defaults a new profile file to CRLF on Windows and LF elsewhere", async () => {
+    const { atomicWriteText } = await loadAtomic();
+    const dir = await createTrackedTempDir("atom-");
+    const target = join(dir, "modlist.txt");
+
+    await atomicWriteText(target, "+A\n");
+
+    expect(await readFile(target, "utf8")).toBe(process.platform === "win32" ? "+A\r\n" : "+A\n");
+  });
+
+  it("leaves other files alone", async () => {
+    const { atomicWriteText } = await loadAtomic();
+    const dir = await createTrackedTempDir("atom-");
+    const target = join(dir, "meta.ini");
+    await writeFile(target, "a\r\n", "utf8");
+
+    await atomicWriteText(target, "a\nb\n");
+
+    expect(await readFile(target, "utf8")).toBe("a\nb\n");
+  });
+});
+
 describe("atomicWriteBytes", () => {
   it("writes binary content", async () => {
     const { atomicWriteBytes } = await loadAtomic();
