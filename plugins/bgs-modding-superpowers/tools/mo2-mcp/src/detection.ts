@@ -14,6 +14,27 @@ import { promisify } from "node:util";
 
 const execFileP = promisify(execFile);
 
+/**
+ * Short-lived cache for detectMo2Running results, keyed by mo2Root+profileDir.
+ *
+ * detectMo2Running shells out to pwsh (Get-Process, and optionally a profile
+ * lock probe) which is expensive relative to the callers that invoke it back
+ * to back within the same tool call (mo2_clone_profile, mo2_configure_executable,
+ * binding.ts). A short TTL lets those bursts reuse one result without letting
+ * the cache go stale enough to misreport a process that just started/exited.
+ */
+const DETECTION_CACHE_TTL_MS = 300;
+const detectionCache = new Map<string, { result: DetectionResult; expiresAt: number }>();
+
+function detectionCacheKey(opts: DetectionOptions): string {
+  return `${opts.mo2Root}::${opts.profileDir ?? ""}`;
+}
+
+/** Test-only helper: clears the detectMo2Running result cache. */
+export function clearDetectionCache(): void {
+  detectionCache.clear();
+}
+
 export interface DetectionResult {
   processRunning: boolean;
   sharedMemoryPresent: boolean | "unknown";
@@ -36,6 +57,18 @@ export interface Mo2ProcessInfo {
 }
 
 export async function detectMo2Running(opts: DetectionOptions): Promise<DetectionResult> {
+  const cacheKey = detectionCacheKey(opts);
+  const cached = detectionCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.result;
+  }
+
+  const result = await detectMo2RunningUncached(opts);
+  detectionCache.set(cacheKey, { result, expiresAt: Date.now() + DETECTION_CACHE_TTL_MS });
+  return result;
+}
+
+async function detectMo2RunningUncached(opts: DetectionOptions): Promise<DetectionResult> {
   const processes = await listMo2ProcessesAtRoot(opts.mo2Root);
   const processRunning = processes.length > 0;
   const pid = processes[0]?.pid ?? null;

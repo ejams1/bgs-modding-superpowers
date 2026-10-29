@@ -49,6 +49,14 @@ export declare class SidecarClient {
     private stopping;
     private permanentFailed;
     private lastExitReason?;
+    /**
+     * Resolvers for in-flight launch() calls, invoked directly by onData()
+     * when the `{"ready": true}` line arrives instead of via a polling loop.
+     * A Set (rather than a single field) so concurrent launch() calls — e.g. a
+     * fresh start() racing an in-flight auto-restart — each still get notified
+     * independently, matching the old poll-on-shared-flag behaviour.
+     */
+    private readyCallbacks;
     start(opts: SidecarStartOptions): Promise<void>;
     private launch;
     private onExit;

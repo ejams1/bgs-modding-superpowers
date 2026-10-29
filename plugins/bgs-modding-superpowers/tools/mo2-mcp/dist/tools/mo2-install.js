@@ -493,7 +493,7 @@ const handler = {
 registerTool({
     name: "mo2_install",
     tier: "T3",
-    description: "Install mod from archive (.zip/.7z/.rar). FOMOD non-interactive via fomod_choices. Pattern A: sidecar parse/extract → broker createMod → move → meta.ini → register modlist.txt.",
+    description: "Install a mod from a .zip/.7z/.rar archive; FOMOD choices go through fomod_choices.",
     inputSchema,
     handler: (args, ctx) => routeToPlanApply(handler, args, ctx, ctx.plans, ctx.snapshots),
 });

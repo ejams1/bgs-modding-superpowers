@@ -4,6 +4,13 @@
  * `*` prefix = enabled (FO4/SSE convention, NOT charrdge's inverted polarity).
  * Optional enrich=true: when broker live, adds masters/load_order/origin/flags
  * via mobase IPluginList.
+ *
+ * Paging (L9 fix, 2026-09-14): `limit`/`offset` bound the returned page
+ * server-side (default limit 100); `compact=true` trims each row to
+ * name/enabled/gui_rank (+isComment on synthetic comment rows). gui_rank
+ * (not the raw `priority` field, which is only populated when enrich=true
+ * and MO2 is live) is used as the "index" because it's always populated —
+ * see enrichGuiFields' offlineRank fallback below.
  */
 import { z } from "zod";
 import { join } from "node:path";
@@ -15,7 +22,17 @@ import { resolveProfileName } from "../path-helpers.js";
 const inputSchema = z.object({
   profile: z.string().optional(),
   enrich: z.boolean().default(false),
+  limit: z.number().int().positive().default(100),
+  offset: z.number().int().nonnegative().default(0),
+  compact: z.boolean().default(false),
 });
+
+type CompactPluginRow = {
+  name: string;
+  enabled: boolean;
+  gui_rank?: number;
+  isComment?: boolean;
+};
 
 type PluginRow = Record<string, unknown> & {
   name: string;
@@ -54,7 +71,7 @@ registerTool({
   name: "mo2_pluginlist",
   tier: "T1",
   description:
-    "Read plugins.txt. Returns plugins with name + enabled (* = enabled per MO2/FO4 convention). Optional broker enrich adds masters/load_order/origin/flags.",
+    "Read plugins.txt. Returns plugins with name + enabled (* = enabled per MO2/FO4 convention). Optional broker enrich adds masters/load_order/origin/flags. Paged: limit (default 100) / offset bound the returned page; plugin_count is always the unpaged total, truncated/nextOffset signal more remain. compact=true trims each row to name/enabled/gui_rank.",
   inputSchema,
   handler: async (args, ctx) => {
     const bound = requireBoundContext(ctx);
@@ -76,12 +93,34 @@ registerTool({
       }
     }
     plugins = enrichGuiFields(plugins);
+    const total = plugins.length;
+    // Defaults are also enforced here (not just in inputSchema) because
+    // tests — and any caller that bypasses the MCP dispatch's zod
+    // safeParse — invoke the handler with a raw args object.
+    const limit = (args.limit as number | undefined) ?? 100;
+    const offset = (args.offset as number | undefined) ?? 0;
+    const page = plugins.slice(offset, offset + limit);
+    const truncated = offset + page.length < total;
+    const compact = (args.compact as boolean | undefined) ?? false;
+    const outPlugins: PluginRow[] | CompactPluginRow[] = compact
+      ? page.map((pl) => ({
+          name: pl.name,
+          enabled: pl.enabled,
+          ...(typeof pl.gui_rank === "number" ? { gui_rank: pl.gui_rank } : {}),
+          ...(pl.isComment ? { isComment: true } : {}),
+        }))
+      : page;
+
     return {
       ok: true,
       result: {
         profile,
-        plugins,
-        plugin_count: plugins.length,
+        plugins: outPlugins,
+        plugin_count: total,
+        limit,
+        offset,
+        truncated,
+        ...(truncated ? { nextOffset: offset + page.length } : {}),
         _meta: {
           array_order: "plugins_txt_forward_order_matches_gui",
           array_order_note:
@@ -90,6 +129,8 @@ registerTool({
             "When enriched, 'priority' = position in plugins.txt; 'load_order' = effective post-sort load index (these differ when ESL/light/master plugins interleave). Agents reasoning about precedence should use 'load_order'.",
           enabled_marker:
             "Asterisk (*) prefix in plugins.txt means enabled. plugin_count includes the comment header entry as a synthetic isComment:true row.",
+          paging_note:
+            "plugins[] is a page of plugin_count total rows (comment rows included), windowed by limit/offset (default limit 100). truncated=true and nextOffset are set when more rows remain past this page.",
         },
       },
       error: null,

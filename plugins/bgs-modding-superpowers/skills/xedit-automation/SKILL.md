@@ -14,6 +14,10 @@ start with the small MCP intent tools, ask the live daemon which r6 capability
 blocks it supports, then switch to the richer one-call patterns only when the
 corresponding `system.capabilities.supports.*` key is present.
 
+Most tools below require a `ready` daemon (see `xedit_session` / `xedit_status`
+first); they fast-fail with `code: "not_ready"` otherwise. This applies
+whenever a tool description does not otherwise mention readiness.
+
 - **Discovery & session** — `xedit_session`, `xedit_list_capabilities`. Call
   `xedit_session` first every conversation. Then call `xedit_list_capabilities`
   once to see the command digest, `contractVersionExpected`, and r6
@@ -25,7 +29,21 @@ corresponding `system.capabilities.supports.*` key is present.
 - **Atomic passthrough** — `xedit_call(command, args)`. For any native daemon
   command that does not have an intent tool yet. Still runs the full pipeline
   (validation → state → rules → audit). Use it whenever the intent tools do not
-  fit.
+  fit. For multi-record read/edit work, prefer the `scripts.write` +
+  `scripts.run` recipe over per-record `xedit_call` loops:
+
+  ```text
+  xedit_call({ command: "scripts.write", args: { id: "Agent/my-procedure", source: "<Pascal>", overwrite: true } })
+  xedit_call({ command: "scripts.run", args: { id: "Agent/my-procedure", targets: [{file, formId}, ...], timeoutMs: 30000, maxStatements: 1000000 } })
+  ```
+
+### Dual-mode search tools
+
+`xedit_find_record` and `xedit_navigate_ancestry` accept EITHER `{file,
+formId}` OR `{editorId, signature?}`. Pass exactly one mode and omit the
+other's fields entirely — do not fill the unused mode with empty-string or
+zero placeholders; the handler rejects those. If both modes are supplied with
+valid non-empty values, `{file, formId}` wins.
 
 For deep reference material, query the structured BGS KB first (`bgs_kb_query`
 / `bgs_kb_get`). Deep reference records live under
@@ -181,11 +199,46 @@ one-call or page-aware form to reduce round-trips and preserve context.
 | Capability key | Contract | Prefer this pattern | KB record |
 |---|---:|---|---|
 | `supports.childGroupNavigation` | 0.13 | Navigate CELL/WRLD/DIAL/QUST ChildGroups through `elements.children` stubs | `xedit.childgroup-navigation.v1` |
+| `supports.applyFilterExtensions` | 0.14 / 0.20 / 0.21 | Bulk-filter records with `records.apply_filter` (`xedit_find_records_by_pattern`) instead of listing + scanning | — |
+| `supports.conflictStatusChildGroup` | 0.15 | Read the r6 child-group conflict sub-block via `xedit_inspect_conflicts_deep` | — |
+| `supports.referencesRecursive` | 0.15 | Chain `records.references {recursive:true}` in the same call via `xedit_inspect_conflicts_deep({includeReferences:true})` | — |
 | `supports.createParentSpec` | 0.16 / 0.18 | Create records directly under parent ChildGroups with `records.create` `parent` | `xedit.records-create-parent-spec.v1` |
 | `supports.elementsChildrenPagination` | 0.17 | Page `elements.children` with `limit` / `offset` | `xedit.elements-children-pagination.v1` |
 | `supports.reverseNavigation` | 0.19 | Add `includeParents:true` and read `relations.parents` | `xedit.reverse-navigation.v1` |
 
 For the whole r6 contract delta, query KB record `xedit.r6-contract-summary.v1`.
+
+### Filtering records at scale (`supports.applyFilterExtensions`)
+
+`xedit_find_records_by_pattern` wraps `records.apply_filter` with the r6/r7
+filter args. At least one filter predicate is required: `parentFormId`,
+`signatures`, or any `*Regex` / `*Pattern` field — `limit`/`offset` alone do
+not count as a filter.
+
+- **Multi-pattern OR (contract 0.20):** each `*Regex` / `*Pattern` field
+  accepts either a single string or a JSON array of strings; an array ORs the
+  patterns together.
+- **Mutually exclusive pairs:** `editorIdPattern`/`editorIdRegex` and
+  `displayNamePattern`/`displayNameRegex` — pick one form per logical field,
+  never both.
+- **Pagination (contract 0.21):** `limit` is 1-100; the daemon rejects
+  `limit > 100` as `invalid_request`. `offset` counts matched records (not raw
+  record indices). The response carries `nextOffset` while `truncated:true`.
+- **`drainAll`:** the MCP server follows `nextOffset` pages server-side until
+  `truncated:false`, aggregating matches. Default cap is 500 matches / 20
+  pages (`drainCapped:true` + `nextOffset` returned when hit); pass
+  `maxMatches` (up to 5000) to raise the cap. Use `compact:true` to trim each
+  match to its locator + EditorID (drops signature/displayName) and reduce
+  response size for large drains.
+
+### Deep conflict + reference audits (`supports.conflictStatusChildGroup` / `supports.referencesRecursive`)
+
+`xedit_inspect_conflicts_deep` is the full "Phase-15-style" audit form: beyond
+what `xedit_inspect_conflicts` returns, it adds the r6 child-group conflict
+sub-block, and — when `includeReferences:true` — chains
+`records.references {recursive:true}` so the outgoing reference tree comes
+back in the same call under `data.references`. Use the lighter
+`xedit_inspect_conflicts` when you only need the verdict + winning override.
 
 ### ChildGroup navigation (`supports.childGroupNavigation`)
 
