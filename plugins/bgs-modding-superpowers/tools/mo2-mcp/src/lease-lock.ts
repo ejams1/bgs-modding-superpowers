@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { promisify } from "node:util";
 import type { LeaseTarget } from "./lease.js";
 
 export const LEASE_LOCK_TTL_MS = 10 * 60 * 1000;
@@ -129,39 +128,8 @@ async function removeLockIfPresent(path: string): Promise<void> {
   }
 }
 
-function parseTasklistCsvPid(line: string): number | null {
-  const trimmed = line.trim();
-  if (!trimmed || trimmed.startsWith("INFO:")) return null;
-  const quoted = /^"[^"]+","(\d+)"/.exec(trimmed);
-  if (quoted) return Number(quoted[1]);
-  const fields = trimmed.split(",");
-  if (fields.length > 1) {
-    const pid = Number(fields[1].replaceAll('"', "").trim());
-    return Number.isInteger(pid) ? pid : null;
-  }
-  return null;
-}
-
 export async function isPidAlive(pid: number): Promise<boolean> {
   if (!Number.isInteger(pid) || pid <= 0) return false;
-  if (process.platform === "win32") {
-    try {
-      const childProcess = await import("node:child_process");
-      if (typeof childProcess.execFile !== "function") return isPidAliveWithSignal(pid);
-      const execFileAsync = promisify(childProcess.execFile);
-      const { stdout } = await execFileAsync(
-        "tasklist",
-        ["/FI", `PID eq ${pid}`, "/FO", "CSV", "/NH"],
-        { windowsHide: true },
-      );
-      return stdout
-        .split(/\r?\n/)
-        .some((line) => parseTasklistCsvPid(line) === pid);
-    } catch {
-      return false;
-    }
-  }
-
   return isPidAliveWithSignal(pid);
 }
 

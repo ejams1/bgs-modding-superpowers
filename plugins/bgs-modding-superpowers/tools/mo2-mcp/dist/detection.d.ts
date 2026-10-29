@@ -1,3 +1,5 @@
+/** Test-only helper: clears the detectMo2Running result cache. */
+export declare function clearDetectionCache(): void;
 export interface DetectionResult {
     processRunning: boolean;
     sharedMemoryPresent: boolean | "unknown";

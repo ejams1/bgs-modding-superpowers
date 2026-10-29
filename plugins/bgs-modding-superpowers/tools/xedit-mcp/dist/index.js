@@ -172,50 +172,52 @@ function resolveLaunchOpts(overrides = {}) {
 // Zod schemas in `src/tools/*.ts`. Tools with no inputs use the explicit empty
 // `properties: {}` form so the schema is still introspectable.
 const FORM_ID_PATTERN = "^(0x)?[0-9a-fA-F]{1,8}$";
+// Full behavior notes (defaults, side effects, recovery) for these fields
+// live in skills/xedit-automation/SKILL.md ("Launching xEdit with explicit
+// args", "Starfield save unlock", "Enabling consent") rather than here.
 const LAUNCH_OVERRIDE_PROPERTIES = {
     moRoot: {
         type: "string",
-        description: "Absolute path to the user's MO2 install root (the directory containing ModOrganizer.exe). " +
-            "Defaults to $env:BGS_MO2_ROOT. Used for plugins.txt lookup and as the base for the launcher path default <moRoot>/tools/xEdit/xEdit.exe.",
+        description: "MO2 install root. Defaults to $env:BGS_MO2_ROOT.",
     },
     launcherPath: {
         type: "string",
-        description: "Absolute path to xEdit.exe. Override the default <moRoot>/tools/xEdit/xEdit.exe.",
+        description: "xEdit.exe path. Overrides the default <moRoot>/tools/xEdit/xEdit.exe.",
     },
     gameMode: {
         type: "string",
-        description: "xEdit game mode string, e.g. 'Fallout4', 'SkyrimSE', 'Starfield'.",
+        description: "xEdit game mode, e.g. 'Fallout4', 'SkyrimSE'.",
     },
     dataPath: {
         type: "string",
-        description: "-D: flag value: absolute path to the game Data directory. Defaults to <gamePath>\\Data read from <moRoot>/ModOrganizer.ini, so it only needs passing to override that. Without a value, xEdit falls back to its registry-discovered (raw Steam) install, which MO2's VFS does not cover - it then loads only the vanilla masters and none of the profile's mods. Use backslashes; the launcher normalizes mixed slashes.",
+        description: "-D flag: game Data directory. Defaults to MO2's gamePath\\Data.",
     },
     pluginsFile: {
         type: "string",
-        description: "-P: flag value: absolute path to a custom plugins.txt. Defaults to the active MO2 profile's plugins.txt.",
+        description: "-P flag: custom plugins.txt path. Defaults to the active profile's.",
     },
     moProfile: {
         type: "string",
-        description: "MO2 profile name, e.g. 'Default'. Defaults to $env:BGS_MO2_PROFILE or 'Default'.",
+        description: "MO2 profile name. Defaults to $env:BGS_MO2_PROFILE or 'Default'.",
     },
     iKnowWhatImDoing: {
         type: "boolean",
-        description: "If true, launches xEdit with the -IKnowWhatImDoing flag, enabling mutating automation commands (records.create, records.copy_into, records.delete, records.mark_deleted, elements.set_value, files.create header writes, etc.). Default false; mutating intent tools (e.g. xedit_create_child_record) fast-fail with mutation_requires_iknowwhatimdoing when consent is off. Verify via xedit_session.data.consentEnabled === true after launch.",
+        description: "Enables -IKnowWhatImDoing for mutating commands. Default false.",
     },
     starfieldRedPill: {
         type: "boolean",
-        description: "Starfield only: pass the upstream save-unlock trio (-ItJustWorksTM -ThisIsFine -GiveMeTheRedPill) to xEdit. Default true — required to save small/medium/localized ESMs in SF1 mode. Set false to opt out. Side effects when on: window title shows ItJustWorks[TM] Edition; files.create no longer auto-adds Starfield.esm as master (pass initialMasters explicitly).",
+        description: "Starfield only: adds the save-unlock switch trio. Default true.",
     },
 };
 export const TOOL_DEFINITIONS = [
     {
         name: "xedit_status",
-        description: "Returns the current xEdit daemon lifecycle state without blocking. status is one of 'not_started' | 'starting' | 'ready' | 'failed'. Use this to poll while waiting for a launch.",
+        description: "Returns the daemon's lifecycle state without blocking: not_started, starting, ready, or failed.",
         inputSchema: { type: "object", properties: {}, additionalProperties: false },
     },
     {
         name: "xedit_start",
-        description: "Kicks off an asynchronous xEdit daemon launch (if not already starting/ready). Returns immediately with the current status. All arguments are optional and override env-var defaults.",
+        description: "Starts an asynchronous xEdit daemon launch; returns immediately with the current status.",
         inputSchema: {
             type: "object",
             properties: { ...LAUNCH_OVERRIDE_PROPERTIES },
@@ -224,23 +226,23 @@ export const TOOL_DEFINITIONS = [
     },
     {
         name: "xedit_health",
-        description: "When the daemon is ready, sends system.ping through the named pipe to confirm it is still responsive (catches zombie daemons). Otherwise returns the same shape as xedit_status.",
+        description: "Pings the ready daemon to confirm it is still responsive (catches zombie daemons); otherwise same as xedit_status.",
         inputSchema: { type: "object", properties: {}, additionalProperties: false },
     },
     {
         name: "xedit_dirty",
-        description: "Returns xEdit's dirty state immediately. Contract-0.23 pending fields authoritatively refresh pendingShutdownSave; older daemons retain MCP-local fail-closed save knowledge. When not ready or probing fails, the last known pendingShutdownSave remains visible alongside lifecycle status.",
+        description: "Returns xEdit's dirty and pending-shutdown-save state without blocking; see xedit-automation skill for the fail-closed fallback rules.",
         inputSchema: { type: "object", properties: {}, additionalProperties: false },
     },
     {
         name: "xedit_flush",
-        description: "Requires a ready contract-0.23 daemon with supports.sessionFlush=true. Drains pending shutdown renames, waits for daemon self-exit, and only then clears lifecycle state.",
+        description: "Drains pending shutdown-save renames and waits for the daemon to exit, then clears lifecycle state.",
         inputSchema: {
             type: "object",
             properties: {
                 force: {
                     type: "boolean",
-                    description: "Forward force unchanged to session.flush. Default false.",
+                    description: "Forwarded unchanged to session.flush. Default false.",
                 },
             },
             additionalProperties: false,
@@ -248,13 +250,13 @@ export const TOOL_DEFINITIONS = [
     },
     {
         name: "xedit_stop",
-        description: "Refreshes authoritative dirty/pending state when ready, then stops the xEdit daemon and clears MCP state. Refuses unsaved or pending state unless force=true, which explicitly abandons it and emits an auditable risk field.",
+        description: "Stops the xEdit daemon and clears MCP state; refuses if unsaved/pending unless force=true.",
         inputSchema: {
             type: "object",
             properties: {
                 force: {
                     type: "boolean",
-                    description: "If true, stop even when xEdit has unsaved changes or pending-shutdown saves. This explicitly abandons the state and returns an auditable risk field. Default false.",
+                    description: "If true, stop despite unsaved/pending-shutdown state (explicit, audited abandonment). Default false.",
                 },
             },
             additionalProperties: false,
@@ -262,14 +264,14 @@ export const TOOL_DEFINITIONS = [
     },
     {
         name: "xedit_restart",
-        description: "Stops the current daemon (same pending-save and dirty-state safety as xedit_stop) and immediately kicks off a fresh asynchronous launch. Accepts the same overrides as xedit_start plus force?: boolean. force=true explicitly abandons pending-save state and records the risk.",
+        description: "Stops the daemon (same safety as xedit_stop); starts a fresh async launch.",
         inputSchema: {
             type: "object",
             properties: {
                 ...LAUNCH_OVERRIDE_PROPERTIES,
                 force: {
                     type: "boolean",
-                    description: "If true, restart even when xEdit has unsaved changes or pending-shutdown saves. This explicitly abandons the state and returns an auditable risk field. Default false.",
+                    description: "If true, restart despite unsaved/pending state (audited). Default false.",
                 },
             },
             additionalProperties: false,
@@ -277,44 +279,46 @@ export const TOOL_DEFINITIONS = [
     },
     {
         name: "xedit_session",
-        description: "Non-blocking. If the daemon is ready: returns gameMode, loadOrderSize, daemonPid. If not_started: auto-initiates launch. Otherwise: returns current status + hint to poll xedit_status.",
+        description: "Non-blocking: returns session info when ready, auto-starts the daemon if not_started, else current status.",
         inputSchema: { type: "object", properties: {}, additionalProperties: false },
     },
     {
         name: "xedit_list_capabilities",
-        description: "Requires the daemon to be ready. Returns the curated 50-command digest + live drift report. Fast-fails with code='not_ready' otherwise.",
+        description: "Returns the curated command digest plus a live drift report against the daemon.",
         inputSchema: { type: "object", properties: {}, additionalProperties: false },
     },
     {
         name: "xedit_find_record",
-        description: "Requires the daemon to be ready. Locates records by either {file, formId} (exact override lookup) OR {editorId, signature?} (Editor ID search across the load order). Pass EXACTLY ONE search mode and OMIT the unused mode's fields entirely. DO NOT fill the unused mode with empty-string or zero placeholders — the handler will reject empty file or empty editorId. Examples: { file: 'Patch.esp', formId: '00ABCDEF' } OR { editorId: 'PlayerRef' } OR { editorId: 'PlayerRef', signature: 'NPC_' }. If both modes are supplied with valid non-empty values, {file, formId} wins. Fast-fails with code='not_ready' if the daemon is not ready.",
         // NOTE: top-level oneOf/anyOf/allOf/enum/not is forbidden by OpenAI-style
         // strict tool-schema backends; the handler-side Zod branch validation in
         // src/tools/find-record.ts is the real gate that rejects empty placeholders
         // and routes the call into the correct mode. minLength:1 on file and
         // editorId is allowed and still rejects empty-string placeholders at the
-        // schema layer for clients that DO enforce that check.
+        // schema layer for clients that DO enforce that check. Tie-break rule
+        // when both modes are supplied (file,formId wins) is documented in
+        // skills/xedit-automation/SKILL.md rather than repeated in every field.
+        description: "Finds a record by {file, formId} OR {editorId, signature?}. Pass exactly one mode; omit the other entirely.",
         inputSchema: {
             type: "object",
             properties: {
                 file: {
                     type: "string",
                     minLength: 1,
-                    description: "Plugin filename including extension, e.g. 'kinggathcreations_spaceship.esm'. Required for the {file, formId} search mode. OMIT this field in editorId mode — do not pass an empty string.",
+                    description: "Plugin filename for {file, formId} mode. Omit in editorId mode.",
                 },
                 formId: {
                     type: "string",
                     pattern: FORM_ID_PATTERN,
-                    description: "FormID as hex, with or without 0x prefix, e.g. '0000003C' or '0x0000003C'. Up to 8 hex digits. Required for the {file, formId} search mode. OMIT this field in editorId mode — do not pass a zero placeholder.",
+                    description: "FormID hex, with/without 0x prefix, for {file, formId} mode. Omit in editorId mode.",
                 },
                 editorId: {
                     type: "string",
                     minLength: 1,
-                    description: "Editor ID to search for, e.g. 'PlayerRef'. Required for the {editorId} search mode. OMIT this field in {file, formId} mode.",
+                    description: "EditorID for {editorId} mode. Omit in {file, formId} mode.",
                 },
                 signature: {
                     type: "string",
-                    description: "Optional 4-char record signature filter for editorId search, e.g. 'QUST', 'NPC_', 'WEAP'. Only meaningful in {editorId} mode.",
+                    description: "Optional 4-char record signature filter, used only in editorId mode.",
                 },
             },
             additionalProperties: false,
@@ -322,7 +326,7 @@ export const TOOL_DEFINITIONS = [
     },
     {
         name: "xedit_read_record",
-        description: "Requires the daemon to be ready. Composite read of a specific record: full record + winning override + base record + conflict status. Fast-fails with code='not_ready' if the daemon is not ready.",
+        description: "Composite read of a record: full record, winning override, base record, and conflict status.",
         inputSchema: {
             type: "object",
             properties: {
@@ -342,7 +346,7 @@ export const TOOL_DEFINITIONS = [
     },
     {
         name: "xedit_inspect_conflicts",
-        description: "Requires the daemon to be ready. Conflict-audit verdict (no_conflict / itpo / itm / minor / breaking) + winning override + referenced_by listing. Fast-fails with code='not_ready' if the daemon is not ready.",
+        description: "Conflict-audit verdict (no_conflict/itpo/itm/minor/breaking) plus winning override and referenced_by listing.",
         inputSchema: {
             type: "object",
             properties: {
@@ -362,7 +366,10 @@ export const TOOL_DEFINITIONS = [
     },
     {
         name: "xedit_inspect_conflicts_deep",
-        description: "Requires the daemon to be ready. Like xedit_inspect_conflicts, but also returns the new r6 child-group conflict sub-block (supports.conflictStatusChildGroup, contract 0.15) and — when includeReferences=true — chains records.references {recursive:true} (supports.referencesRecursive, contract 0.15) so the agent gets the outgoing reference tree in the same call. Use this for full Phase-15-style conflict + reference audits; use xedit_inspect_conflicts for the lighter envelope.",
+        // r6 support-key/contract details for the child-group block and the
+        // chained recursive-references call are in skills/xedit-automation
+        // SKILL.md's r6 capability table.
+        description: "Like xedit_inspect_conflicts, plus the r6 child-group conflict block and, if includeReferences=true, the recursive reference tree.",
         inputSchema: {
             type: "object",
             properties: {
@@ -387,68 +394,85 @@ export const TOOL_DEFINITIONS = [
     },
     {
         name: "xedit_find_records_by_pattern",
-        description: "Requires the daemon to be ready. Wraps records.apply_filter with the r6/r7 filter args (supports.applyFilterExtensions, contract 0.14 + 0.20 multi-pattern + 0.21 pagination: offset/nextOffset, maxLimit 100, optional MCP-side drainAll). At least one filter predicate is required: parentFormId, signatures, or any of *Regex / *Pattern. For multi-pattern OR, pass either a single regex string or a JSON array of strings; *Pattern and *Regex for the same logical name (editorId / displayName) are mutually exclusive.",
+        // NOTE ON SIZE: this tool's 14-property filter surface (parentFormId,
+        // signatures, 5 *Regex fields, 2 *Pattern fields, pagination/drainAll)
+        // is inherent to apply_filter's real parameter count, not description
+        // bloat — see the schema-size unit test's allowlist for the byte floor.
+        // Pagination/drainAll contract details and the *Regex/*Pattern mutual
+        // exclusivity are in skills/xedit-automation/SKILL.md ("Filtering
+        // records at scale").
+        description: "Filters records by parentFormId, signatures, or EditorID/name regex or wildcard; at least one predicate required.",
         inputSchema: {
             type: "object",
             properties: {
                 file: {
                     type: "string",
                     minLength: 1,
-                    description: "Optional plugin filename to scope the filter to a single file.",
+                    description: "Plugin filename to scope the filter.",
                 },
                 parentFormId: {
                     type: "string",
                     pattern: FORM_ID_PATTERN,
-                    description: "Optional parent record FormID (e.g. a CELL FormID) to restrict matches to children of that record (supports.applyFilterExtensions).",
+                    description: "Parent FormID; restricts matches to its children.",
                 },
                 signatures: {
                     type: "array",
                     items: { type: "string", minLength: 1 },
                     minItems: 1,
-                    description: "Optional list of 4-char record signatures to include, e.g. ['REFR','ACHR'].",
+                    description: "4-char record signatures to include, e.g. REFR.",
                 },
                 editorIdRegex: {
                     type: "string",
-                    description: "Regex against EditorID. Pass an array of strings instead of a single string to OR multiple patterns (contract 0.20 multiPattern). Mutually exclusive with editorIdPattern.",
+                    description: "Regex against EditorID (array=OR). Excludes editorIdPattern.",
                 },
                 displayNameRegex: {
                     type: "string",
-                    description: "Regex against display name. Multi-pattern: pass an array. Mutually exclusive with displayNamePattern.",
+                    description: "Regex against display name (array=OR). Excludes displayNamePattern.",
                 },
                 fullNameRegex: {
                     type: "string",
-                    description: "Regex against FULL name. Multi-pattern: pass an array.",
+                    description: "Regex against FULL name (array=OR).",
                 },
                 baseEditorIdRegex: {
                     type: "string",
-                    description: "Regex against base record's EditorID. Multi-pattern: pass an array.",
+                    description: "Regex against base EditorID (array=OR).",
                 },
                 baseDisplayNameRegex: {
                     type: "string",
-                    description: "Regex against base record's display name. Multi-pattern: pass an array.",
+                    description: "Regex against base display name (array=OR).",
                 },
                 editorIdPattern: {
                     type: "string",
-                    description: "Simple wildcard pattern against EditorID (no regex metachars). Mutually exclusive with editorIdRegex.",
+                    description: "Wildcard against EditorID. Excludes editorIdRegex.",
                 },
                 displayNamePattern: {
                     type: "string",
-                    description: "Simple wildcard pattern against display name. Mutually exclusive with displayNameRegex.",
+                    description: "Wildcard against display name. Excludes displayNameRegex.",
                 },
                 limit: {
                     type: "integer",
                     minimum: 1,
                     maximum: 100,
-                    description: "Maximum matches per page (1..100). Contract 0.21 rejects limit > 100 as invalid_request.",
+                    description: "Max matches per page, 1-100.",
                 },
                 offset: {
                     type: "integer",
                     minimum: 0,
-                    description: "Skip this many MATCHED records before returning results (contract 0.21 pagination; offset counts matched records, not raw record indices). Response surfaces nextOffset while truncated=true.",
+                    description: "Matched records to skip (pagination).",
                 },
                 drainAll: {
                     type: "boolean",
-                    description: "If true, the MCP server follows nextOffset pages server-side until truncated=false, aggregating matches. Hard cap 20 pages / 2000 matches (drainCapped=true + nextOffset returned when hit). Default false.",
+                    description: "Aggregate all pages server-side (capped).",
+                },
+                compact: {
+                    type: "boolean",
+                    description: "Trim each match to locator + EditorID only.",
+                },
+                maxMatches: {
+                    type: "integer",
+                    minimum: 1,
+                    maximum: 5000,
+                    description: "With drainAll: raises the match cap (max 5000).",
                 },
             },
             additionalProperties: false,
@@ -456,51 +480,49 @@ export const TOOL_DEFINITIONS = [
     },
     {
         name: "xedit_create_child_record",
-        description: "MUTATING. Requires the daemon to be ready AND launched with -IKnowWhatImDoing (data.consentEnabled=true on xedit_session). Wraps records.create with the r6 parent shape (supports.createParentSpec, contract 0.16, WRLD coords extension 0.18). " +
-            "Three valid parent shapes: " +
-            "CELL/DIAL/QUST child = { file, formId, subGroup? }; " +
-            "WRLD persistent child = { file, formId, subGroup: 'Persistent' }; " +
-            "WRLD exterior child = { file, formId, coords: [x, y] }. " +
-            "subGroup and coords are mutually exclusive. Fast-fails with code='mutation_requires_iknowwhatimdoing' if consent is not active.",
+        // Full three-shape recipe (CELL/DIAL/QUST vs WRLD-persistent vs
+        // WRLD-exterior) + contract/support-key references live in
+        // skills/xedit-automation/SKILL.md ("records.create parent-spec").
+        description: "MUTATING; requires -IKnowWhatImDoing. Creates a child record under a parent.",
         inputSchema: {
             type: "object",
             properties: {
                 targetFile: {
                     type: "string",
                     minLength: 1,
-                    description: "Plugin filename to create the new record in.",
+                    description: "New record's plugin filename.",
                 },
                 signature: {
                     type: "string",
                     minLength: 4,
                     maxLength: 4,
-                    description: "4-char xEdit record signature, e.g. 'REFR', 'NPC_', 'ACHR'. Must match a supported signature for the chosen parent type.",
+                    description: "Record signature (4 chars).",
                 },
                 parent: {
                     type: "object",
-                    description: "Parent locator + sub-group selector. Use subGroup for CELL/DIAL/QUST/WRLD-persistent, coords for WRLD-exterior cells. Exactly one of (subGroup, coords) — never both.",
+                    description: "Parent locator; subGroup or coords, not both.",
                     properties: {
                         file: {
                             type: "string",
                             minLength: 1,
-                            description: "Plugin filename of the parent record (matches daemon records.create parent.file).",
+                            description: "Parent's plugin filename.",
                         },
                         formId: {
                             type: "string",
                             pattern: FORM_ID_PATTERN,
-                            description: "FormID of the parent record, hex with or without 0x prefix (matches daemon records.create parent.formId).",
+                            description: "Parent FormID (hex, 0x optional).",
                         },
                         subGroup: {
                             type: "string",
                             minLength: 1,
-                            description: "Sub-group selector, e.g. 'Persistent' for a WRLD persistent child or 'Temporary' for CELL temporary children. Mutually exclusive with coords.",
+                            description: "Sub-group, e.g. Persistent; excl. coords.",
                         },
                         coords: {
                             type: "array",
                             items: { type: "number" },
                             minItems: 2,
                             maxItems: 2,
-                            description: "[x, y] exterior cell coordinates for a WRLD exterior child. Mutually exclusive with subGroup.",
+                            description: "[x, y] coords; excl. subGroup.",
                         },
                     },
                     required: ["file", "formId"],
@@ -509,11 +531,10 @@ export const TOOL_DEFINITIONS = [
                 editorId: {
                     type: "string",
                     minLength: 1,
-                    description: "Optional EditorID to set on the new record.",
+                    description: "Optional EditorID.",
                 },
                 formData: {
                     type: "object",
-                    description: "Optional initial element payload for the new record (passed through to records.create).",
                     additionalProperties: true,
                 },
             },
@@ -523,29 +544,28 @@ export const TOOL_DEFINITIONS = [
     },
     {
         name: "xedit_navigate_ancestry",
-        description: "Requires the daemon to be ready. Resolves the ancestor chain (CELL > WRLD parents, DIAL > INFO parents, QUST sub-tree, etc.) for a single record by forcing includeParents=true on records.get / records.find_by_editor_id (supports.reverseNavigation + supports.childGroupNavigation, contract 0.19 + 0.13). " +
-            "Pass EITHER {file, formId} OR {editorId, signature?}. Returns a flat ancestors array, nearest-first, depth-capped at 16 per the r6 contract.",
+        description: "Resolves the ancestor chain (CELL>WRLD, DIAL>INFO, QUST sub-tree, etc.) for a record. Pass {file, formId} OR {editorId, signature?}.",
         inputSchema: {
             type: "object",
             properties: {
                 file: {
                     type: "string",
                     minLength: 1,
-                    description: "Plugin filename for {file, formId} mode. OMIT in editorId mode — do not pass an empty string.",
+                    description: "Plugin filename for {file, formId} mode. Omit in editorId mode.",
                 },
                 formId: {
                     type: "string",
                     pattern: FORM_ID_PATTERN,
-                    description: "FormID as hex, with or without 0x prefix. OMIT in editorId mode — do not pass a zero placeholder.",
+                    description: "FormID hex for {file, formId} mode. Omit in editorId mode.",
                 },
                 editorId: {
                     type: "string",
                     minLength: 1,
-                    description: "EditorID for {editorId} mode. OMIT in {file, formId} mode.",
+                    description: "EditorID for {editorId} mode. Omit in {file, formId} mode.",
                 },
                 signature: {
                     type: "string",
-                    description: "Optional 4-char record signature filter for editorId search, e.g. 'CELL', 'REFR'. Only meaningful in {editorId} mode.",
+                    description: "Optional 4-char record signature filter, used only in editorId mode.",
                 },
             },
             additionalProperties: false,
@@ -553,24 +573,19 @@ export const TOOL_DEFINITIONS = [
     },
     {
         name: "xedit_call",
-        description: "Requires the daemon to be ready. Atomic passthrough for native daemon commands except lifecycle-owned session.flush, still in-harness (audit + rules + precheck still apply). " +
-            "Use xedit_list_capabilities to enumerate the live command set. For multi-record read/edit work, prefer the scripts.write + scripts.run recipe: " +
-            "xedit_call({ command: 'scripts.write', args: { id: 'Agent/my-procedure', source: '<Pascal>', overwrite: true } }) followed by " +
-            "xedit_call({ command: 'scripts.run', args: { id: 'Agent/my-procedure', targets: [{file, formId}, ...], timeoutMs: 30000, maxStatements: 1000000 } }). " +
-            "Fast-fails with code='not_ready' if the daemon is not ready.",
+        // The scripts.write + scripts.run multi-record recipe lives in
+        // skills/xedit-automation/SKILL.md ("Atomic passthrough").
+        description: "Atomic passthrough for native daemon commands with no dedicated intent tool; still runs the full validation/audit pipeline.",
         inputSchema: {
             type: "object",
             properties: {
                 command: {
                     type: "string",
-                    description: "Native daemon command name, e.g. 'files.list', 'records.list', 'records.referenced_by', 'scripts.write', 'scripts.run'.",
+                    description: "Native daemon command name, e.g. 'records.get', 'records.list', 'scripts.run'.",
                 },
                 args: {
                     type: "object",
-                    description: "Args object for the daemon command. Shape depends on the command — see xedit_list_capabilities. Examples: " +
-                        "{} for commands like files.list and system.ping; " +
-                        "{ file: 'kinggathcreations_spaceship.esm', signature: 'QUST' } for records.list; " +
-                        "{ file, formId } for records.get / .winning_override / .base_record / .conflict_status / .referenced_by / .children.",
+                    description: "Args object for the command; shape depends on command (see xedit_list_capabilities).",
                     additionalProperties: true,
                 },
             },
